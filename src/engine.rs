@@ -320,6 +320,7 @@ impl Manager {
                     mgr,
                     local,
                     players: Vec::new(),
+                    last_bulk: None,
                     entities: EntityArena::with_capacity(ENTITIES_PER_ROOM),
                     tick: 0,
                     signs: HashMap::new(),
@@ -362,6 +363,7 @@ pub struct Room {
     local: Arc<Lane>,
     pub players: Vec<Player>,
     entities: EntityArena,
+    last_bulk: Option<([ColumnPos; 2], Packet)>,
     tick: u64,
     circuit: crate::redstone::Circuit,
     changed: Vec<(BlockPos, u16)>,
@@ -727,23 +729,47 @@ impl Room {
                 -((dx * dx + dz * dz - (dx * dir[0] + dz * dir[1]).clamp(-0.9, 0.9)) * 100.) as i32
             });
         }
-        for _ in 0..2 {
-            let Some(col) = player.pending_cols.pop() else {
-                break;
-            };
+        let cols = [player.pending_cols.pop(), player.pending_cols.pop()];
+        for col in cols.into_iter().flatten() {
             self.mgr.metrics.chunk_lookups.fetch_add(1, Relaxed);
             if self.world.template.cached(col) {
                 self.mgr.metrics.chunk_hits.fetch_add(1, Relaxed);
             }
-            if let Some(packet) = self.world.template.packet(col) {
+        }
+        let mut grouped = false;
+        if let [Some(a), Some(b)] = cols
+            && a.0.abs_diff(b.0) + a.1.abs_diff(b.1) == 1
+        {
+            let positions = [a, b];
+            if self
+                .last_bulk
+                .as_ref()
+                .is_none_or(|(key, _)| *key != positions)
+            {
+                self.last_bulk = self
+                    .world
+                    .template
+                    .bulk_packet(positions)
+                    .map(|p| (positions, p));
+            }
+            if let Some((_, packet)) = &self.last_bulk {
+                player.send(packet.clone());
+                grouped = true;
+            }
+        }
+        for col in cols.into_iter().flatten() {
+            if !grouped {
+                let Some(packet) = self.world.template.packet(col) else {
+                    continue;
+                };
                 player.send(packet);
-                player.loaded.insert(col);
-                if let Some(edits) = self.world.edits.get(&col) {
-                    for (&pos, &state) in edits {
-                        player.send(p::block(pos, state));
-                        if let Some(lines) = self.signs.get(&pos) {
-                            player.send(p::sign(pos, lines));
-                        }
+            }
+            player.loaded.insert(col);
+            if let Some(edits) = self.world.edits.get(&col) {
+                for (&pos, &state) in edits {
+                    player.send(p::block(pos, state));
+                    if let Some(lines) = self.signs.get(&pos) {
+                        player.send(p::sign(pos, lines));
                     }
                 }
             }

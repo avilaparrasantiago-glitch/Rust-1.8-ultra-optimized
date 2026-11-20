@@ -294,6 +294,30 @@ impl Template {
     pub fn packet(&self, pos: ColumnPos) -> Option<Packet> {
         self.columns.get(&pos).map(|col| col.packet(pos))
     }
+    pub(crate) fn bulk_packet(&self, positions: [ColumnPos; 2]) -> Option<Packet> {
+        let [a, b] = positions;
+        let columns = [self.columns.get(&a)?, self.columns.get(&b)?];
+        let lengths = columns.map(|col| col.sections.len() * 12288 + 256);
+        Some(Packet::with_capacity(
+            0x26,
+            23 + lengths.iter().sum::<usize>(),
+            |w| {
+                w.put_u8(1); // Overworld sky light
+                w.var(2);
+                for (&(x, z), col) in positions.iter().zip(columns) {
+                    w.put_i32(x);
+                    w.put_i32(z);
+                    w.put_u16(col.sections.keys().fold(0u16, |mask, y| mask | (1 << y)));
+                }
+                for ((col, pos), len) in columns.into_iter().zip(positions).zip(lengths) {
+                    let packet = col.packet(pos);
+                    let body = packet.body();
+                    w.extend_from_slice(&body[body.len() - len..]);
+                }
+            },
+        ))
+    }
+
     pub fn cached(&self, pos: ColumnPos) -> bool {
         self.columns
             .get(&pos)

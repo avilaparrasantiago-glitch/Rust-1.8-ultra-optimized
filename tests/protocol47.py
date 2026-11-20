@@ -169,15 +169,23 @@ class PlayTests(unittest.TestCase):
             a = self.client(port)
             a.login("Alice")
             a.confirm_pos()
+            bulk = a.until(0x26)
+            sky, count = bulk[:2]
+            self.assertEqual((sky, count), (1, 2))
+            x0, z0, mask0, x1, z1, mask1 = struct.unpack(">iiHiiH", bulk[2:22])
+            self.assertEqual((x0, z0, mask0, mask1), (0, 0, 1, 1))
+            self.assertEqual(abs(x1 - x0) + abs(z1 - z0), 1)
             chunk = a.until(0x21)
             cx, cz, full, mask = struct.unpack(">iiBH", chunk[:11])
-            self.assertEqual((cx, cz, full, mask), (0, 0, 1, 1))
+            self.assertEqual((full, mask), (1, 1))
             length, start = number(chunk, 11)
             self.assertEqual(length, 12288 + 256)
             # Vanilla 1.8 section in YZX order, then block light, sky light and biomes.
             blocks = (b"\x70\x00" * 256 + b"\x30\x00" * 512
                       + b"\x20\x00" * 256 + bytes(3072 * 2))
-            self.assertEqual(chunk[start:], blocks + bytes(2048) + b"\xff" * 2048 + b"\x01" * 256)
+            expected = blocks + bytes(2048) + b"\xff" * 2048 + b"\x01" * 256
+            self.assertEqual(chunk[start:], expected)
+            self.assertEqual(bulk[22:], expected * 2)
             b = self.client(port)
             b.login("Bob")
             b.confirm_pos()

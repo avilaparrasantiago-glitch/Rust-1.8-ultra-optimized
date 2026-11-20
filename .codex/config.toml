@@ -1,0 +1,17 @@
+[mcp_servers.coral_rust]
+command = "uv"
+args = ["run", "--script", "tools/rust_mcp.py"]
+startup_timeout_sec = 120
+tool_timeout_sec = 330
+
+[mcp_servers.context7]
+url = "https://mcp.context7.com/mcp"
+
+[mcp_servers.coral_git]
+command = "uvx"
+args = ["mcp-server-git", "--repository", "."]
+startup_timeout_sec = 120
+
+[mcp_servers.github]
+url = "https://api.githubcopilot.com/mcp/"
+bearer_token_env_var = "GITHUB_PERSONAL_ACCESS_TOKEN"

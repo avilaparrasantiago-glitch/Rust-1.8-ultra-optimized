@@ -1,0 +1,116 @@
+use crate::wire::invalid;
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::BTreeMap,
+    io,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
+use uuid::Uuid;
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Config {
+    pub listen: SocketAddr,
+    pub metrics: SocketAddr,
+    pub max_players: usize,
+    pub view_distance: u8,
+    pub worlds: Vec<String>,
+    pub persistent_worlds: Vec<String>,
+    pub scripts: BTreeMap<String, PathBuf>,
+    pub arena_file: Option<PathBuf>,
+    pub data_dir: PathBuf,
+    pub motd: String,
+    pub operators: BTreeMap<Uuid, u8>,
+    pub permissions: BTreeMap<Uuid, Vec<String>>,
+    pub database_url_env: Option<String>,
+    pub redis_url_env: Option<String>,
+    pub nats_url_env: Option<String>,
+    pub proxy_secret_env: Option<String>,
+}
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            listen: "127.0.0.1:25565".parse().unwrap(),
+            metrics: "127.0.0.1:9900".parse().unwrap(),
+            persistent_worlds: Vec::new(),
+            scripts: BTreeMap::new(),
+            max_players: 128,
+            view_distance: 3,
+            worlds: vec!["lobby".into(), "arena".into()],
+            arena_file: None,
+            data_dir: "data".into(),
+            motd: "Coral Ã‚Â· Protocol 47".into(),
+            operators: BTreeMap::new(),
+            permissions: BTreeMap::new(),
+            database_url_env: None,
+            redis_url_env: None,
+            nats_url_env: None,
+            proxy_secret_env: None,
+        }
+    }
+}
+impl Config {
+    pub fn load(file: Option<&Path>) -> io::Result<Self> {
+        let c: Self = match file {
+            Some(p) => serde_json::from_slice(&std::fs::read(p)?).map_err(io::Error::other)?,
+            None => Self::default(),
+        };
+        if !c.listen.ip().is_loopback() && c.proxy_secret_env.is_none() {
+            return Err(invalid("public listeners require signed proxy forwarding"));
+        }
+        if c.persistent_worlds.iter().any(|n| !c.worlds.contains(n))
+            || !(1..=8).contains(&c.view_distance)
+            || !(1..=1_000_000).contains(&c.max_players)
+            || c.worlds.is_empty()
+            || c.worlds.len() > 128
+            || c.operators.values().any(|&l| l > 4)
+            || c.worlds.iter().any(|n| !valid_world(n))
+            || c.worlds
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                != c.worlds.len()
+        {
+            return Err(invalid(
+                "invalid world, distance, player limit or permission level",
+            ));
+        }
+        Ok(c)
+    }
+}
+pub fn valid_world(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 32
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+}
+pub fn persistent_seed(dir: &Path) -> io::Result<i64> {
+    use std::io::Write;
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join("seed");
+    if !path.exists() {
+        let tmp = dir.join(format!("seed-{}.tmp", Uuid::new_v4()));
+        let seed = Uuid::new_v4().as_u128() as i64;
+        let mut f = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&tmp)?;
+        let result = (|| {
+            write!(f, "{seed}")?;
+            f.sync_all()?;
+            drop(f);
+            std::fs::hard_link(&tmp, &path)
+        })();
+        std::fs::remove_file(tmp)?;
+        if let Err(e) = result
+            && e.kind() != io::ErrorKind::AlreadyExists
+        {
+            return Err(e);
+        }
+    }
+    std::fs::read_to_string(path)?
+        .trim()
+        .parse()
+        .map_err(|_| invalid("invalid persisted seed"))
+}

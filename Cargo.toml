@@ -1,0 +1,50 @@
+[package]
+name = "coral-engine"
+version = "0.1.0"
+edition = "2024"
+default-run = "coral"
+
+[[bin]]
+name = "coral"
+path = "src/main.rs"
+
+[dependencies]
+bytes = "1"
+core_affinity = "0.8"
+crossbeam-channel = "0.5"
+hmac = "0.12"
+fastnbt = "2"
+flate2 = "1"
+memmap2 = "0.9"
+tempfile = "3"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "any", "sqlite", "postgres"] }
+async-nats = "0.46"
+redis = { version = "0.32", default-features = false, features = ["tokio-comp", "connection-manager"] }
+futures-util = "0.3"
+md-5 = "0.10"
+mlua = { version = "0.11", features = ["luau", "vendored", "send"] }
+libdeflater = "1"
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal"] }
+uuid = { version = "1", features = ["v4", "md5", "serde"] }
+zstd = "0.13"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tokio-uring = "0.5"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "transport"
+harness = false
+
+[profile.bench]
+debug = 1

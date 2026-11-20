@@ -31,6 +31,11 @@ fn chunk_packets(c: &mut Criterion) {
     });
 }
 fn normal_generation(c: &mut Criterion) {
+    let populated = Template::normal(9581, 1);
+    populated.packet((1, 0)).unwrap();
+    c.bench_function("terrain/cached_populated_packet", |b| {
+        b.iter(|| black_box(populated.packet(black_box((1, 0))).unwrap()))
+    });
     c.bench_function("terrain/normal_9_columns", |b| {
         b.iter(|| black_box(Template::normal(9581, 1)))
     });

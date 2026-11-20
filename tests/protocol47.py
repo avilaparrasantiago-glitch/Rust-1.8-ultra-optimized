@@ -120,7 +120,7 @@ class Client:
 
 
 @contextlib.contextmanager
-def server(**overrides):
+def server(*, started=None, **overrides):
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         port, metrics = free_port(), free_port()
@@ -146,6 +146,8 @@ def server(**overrides):
                             break
                     except OSError:
                         time.sleep(.04)
+                if started:
+                    started(proc)
                 yield port, metrics
             finally:
                 proc.terminate()
@@ -289,6 +291,34 @@ class PlayTests(unittest.TestCase):
             surface = struct.unpack_from("<H", bulk, blocks + (int(y) - 1) * 512)[0]
             self.assertIn(surface >> 4, (2, 12))
             self.assertEqual(struct.unpack_from("<H", bulk, blocks)[0], 7 << 4)
+
+    def test_explore_edit_and_reopen(self):
+        with tempfile.TemporaryDirectory() as world_dir:
+            settings = dict(arena_file=None, terrain="normal", worlds=["lobby"],
+                            persistent_worlds=["lobby"], data_dir=world_dir,
+                            operators={str(uuid.UUID(bytes=hashlib.md5(f"OfflinePlayer:{n}".encode()).digest(),
+                                                     version=3)): 4 for n in ("Alice", "Bob")})
+            for restart in (False, True):
+                with server(**settings) as (port, _):
+                    a = self.client(port)
+                    name = "Bob" if restart else "Alice"
+                    a.login(name)
+                    a.confirm_pos()
+                    a.chat(f"/tp {name} -159.5 100 160.5")
+                    a.confirm_pos()
+                    a.until(0x21, lambda b: struct.unpack_from(">ii", b) == (-10, 10) and b[9:11] != bytes(2))
+                    if not restart:
+                        a.chat("/setblock -160 99 160 57")
+                    change = a.until(0x23, lambda b: number(b, 8)[0] == 57 << 4)
+                    self.assertEqual(struct.unpack_from(">Q", change)[0],
+                                     ((-160 & 0x3ffffff) << 38) | (99 << 26) | 160)
+                    if not restart:
+                        a.chat("/save-all")
+                        deadline = time.monotonic() + 10
+                        while not (Path(world_dir) / "lobby/region/generated.edits").exists():
+                            self.assertLess(time.monotonic(), deadline)
+                            time.sleep(.05)
+                    a.s.close()
 
     def test_queue_promotion(self):
         with server(max_players=1) as (port, _):

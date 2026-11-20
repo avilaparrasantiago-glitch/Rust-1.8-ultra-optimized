@@ -14,6 +14,8 @@ pub struct Metrics {
     pub wire_bytes: AtomicU64,
     pub body_bytes: AtomicU64,
     pub dropped: AtomicU64,
+    pub generated_columns: AtomicU64,
+    pub generation_ns: AtomicU64,
     pub chunk_hits: AtomicU64,
     pub chunk_lookups: AtomicU64,
 }
@@ -51,6 +53,14 @@ impl Metrics {
             ("body_bytes_total", self.body_bytes.load(Relaxed)),
             ("wire_bytes_total", self.wire_bytes.load(Relaxed)),
             ("queue_overflows_total", self.dropped.load(Relaxed)),
+            (
+                "generated_columns_total",
+                self.generated_columns.load(Relaxed),
+            ),
+            (
+                "generation_nanoseconds_total",
+                self.generation_ns.load(Relaxed),
+            ),
             ("chunk_cache_hits_total", self.chunk_hits.load(Relaxed)),
             ("chunk_lookups_total", self.chunk_lookups.load(Relaxed)),
         ] {

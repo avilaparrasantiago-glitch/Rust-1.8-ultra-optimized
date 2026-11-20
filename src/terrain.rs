@@ -30,7 +30,7 @@ struct Surface {
     biome: u8,
 }
 
-struct Generator(u64);
+pub(crate) struct Generator(pub(crate) u64);
 
 impl Generator {
     fn hash(&self, x: i64, z: i64, layer: u64) -> u64 {
@@ -97,7 +97,7 @@ impl Generator {
         Surface { height, biome }
     }
 
-    fn column(&self, cx: i32, cz: i32) -> Column {
+    pub(crate) fn column(&self, cx: i32, cz: i32) -> Column {
         let surface: [Surface; 256] = std::array::from_fn(|i| {
             self.surface(
                 i64::from(cx) * 16 + (i % 16) as i64,

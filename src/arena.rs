@@ -115,7 +115,7 @@ pub(crate) struct Column {
     pub(crate) nbt: Vec<u8>,
 }
 impl Column {
-    fn packet(&self, (x, z): ColumnPos) -> Packet {
+    pub(crate) fn packet(&self, (x, z): ColumnPos) -> Packet {
         self.packet
             .get_or_init(|| {
                 let payload_len = self.sections.len() * 12288 + 256;
@@ -332,6 +332,7 @@ pub struct World {
     pub name: String,
     pub template: Arc<Template>,
     pub edits: Arc<crate::anvil::Edits>,
+    pub(crate) generated: Template,
 }
 impl World {
     pub fn new(name: String, template: Arc<Template>) -> Self {
@@ -339,6 +340,19 @@ impl World {
             name,
             template,
             edits: Arc::default(),
+            generated: Template {
+                columns: BTreeMap::new(),
+            },
+        }
+    }
+    pub fn contains(&self, col: ColumnPos) -> bool {
+        self.template.contains(col) || self.generated.contains(col)
+    }
+    fn base(&self, p: BlockPos) -> u16 {
+        if self.generated.contains((p.0 >> 4, p.2 >> 4)) {
+            self.generated.block(p)
+        } else {
+            self.template.block(p)
         }
     }
     pub fn block(&self, p: BlockPos) -> u16 {
@@ -346,15 +360,16 @@ impl World {
             .get(&(p.0 >> 4, p.2 >> 4))
             .and_then(|m| m.get(&p))
             .copied()
-            .unwrap_or_else(|| self.template.block(p))
+            .unwrap_or_else(|| self.base(p))
     }
     pub fn set(&mut self, p: BlockPos, state: u16) -> io::Result<()> {
         let col = (p.0 >> 4, p.2 >> 4);
-        if !self.template.contains(col) {
+        if !self.contains(col) {
             return Err(invalid("outside arena"));
         }
+        let original = self.base(p);
         let edits = Arc::make_mut(&mut self.edits);
-        if self.template.block(p) == state {
+        if original == state {
             if let Some(column) = edits.get_mut(&col) {
                 column.remove(&p);
                 if column.is_empty() {

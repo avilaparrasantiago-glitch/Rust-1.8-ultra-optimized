@@ -395,7 +395,7 @@ fn run(room: &mut Room, i: usize, line: &str) -> io::Result<Option<String>> {
                                 .ok_or(invalid("Invalid destination height"))?,
                             dest.2 + z - min.2,
                         );
-                        if !room.world.template.contains((target.0 >> 4, target.2 >> 4)) {
+                        if !room.world.contains((target.0 >> 4, target.2 >> 4)) {
                             return Err(invalid("Destination outside arena"));
                         }
                         writes.push((target, value.unwrap_or_else(|| room.world.block((x, y, z)))));

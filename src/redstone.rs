@@ -146,7 +146,7 @@ impl Circuit {
             return;
         };
         let Some(head) = at(p, dir) else { return };
-        if !w.template.contains((head.0 >> 4, head.2 >> 4)) {
+        if !w.contains((head.0 >> 4, head.2 >> 4)) {
             return;
         }
         if !extend {
@@ -169,7 +169,7 @@ impl Circuit {
         let mut moves = [((0, 0, 0), 0); 12];
         let mut n = 0;
         loop {
-            if !w.template.contains((scan.0 >> 4, scan.2 >> 4)) {
+            if !w.contains((scan.0 >> 4, scan.2 >> 4)) {
                 return;
             }
             let v = w.block(scan);

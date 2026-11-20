@@ -1,5 +1,6 @@
 mod drops;
 mod entity_visibility;
+mod generation;
 mod windows;
 use crate::{
     arena::{BlockPos, ColumnPos, Template, World, column},
@@ -295,16 +296,23 @@ impl Manager {
         let index = map.len();
         let mgr = self.clone();
         let local = lane.clone();
-        let (store, template) = if self.cfg.persistent_worlds.iter().any(|s| s == name) {
-            let (s, t) = crate::persistence::Store::open(
+        let normal = self.cfg.arena_file.is_none()
+            && matches!(self.cfg.terrain, crate::config::Terrain::Normal);
+        let generation = normal
+            .then(|| generation::Generation::new(self.seed, self.metrics.clone()))
+            .transpose()?;
+        let (store, template, edits) = if self.cfg.persistent_worlds.iter().any(|s| s == name) {
+            let (s, t, edits) = crate::persistence::Store::open(
                 &self.cfg.data_dir.join(name).join("region"),
                 self.template.clone(),
+                normal,
             )?;
-            (Some(s), t)
+            (Some(s), t, edits)
         } else {
-            (None, self.template.clone())
+            (None, self.template.clone(), Default::default())
         };
-        let world = World::new(name.into(), template);
+        let mut world = World::new(name.into(), template);
+        world.edits = edits;
         let handle = std::thread::Builder::new()
             .name(format!("world-{name}"))
             .spawn(move || {
@@ -315,6 +323,7 @@ impl Manager {
                 }
                 Room {
                     world,
+                    generation,
                     notifications,
                     scripts,
                     store,
@@ -362,6 +371,7 @@ impl Manager {
 }
 
 pub struct Room {
+    generation: Option<generation::Generation>,
     notifications: Receiver<Packet>,
     pub world: World,
     pub mgr: Arc<Manager>,
@@ -396,6 +406,9 @@ impl Room {
             }
             for (p, transfer) in rx.try_iter().take(16) {
                 self.join(p, transfer);
+            }
+            if let Some(generation) = &mut self.generation {
+                generation.collect(&mut self.world.generated);
             }
             self.tick += 1;
             self.time = self.time.wrapping_add(1);
@@ -449,6 +462,13 @@ impl Room {
                 }
                 self.advance(i);
                 i += 1;
+            }
+            if let Some(generation) = &mut self.generation {
+                generation.trim(
+                    &self.players,
+                    i32::from(self.mgr.cfg.view_distance),
+                    &mut self.world.generated,
+                );
             }
             self.entities.tick();
             drops::collect_drops(&mut self.entities, &mut self.players);
@@ -718,7 +738,9 @@ impl Room {
             });
             for x in c.0 - radius..=c.0 + radius {
                 for z in c.1 - radius..=c.1 + radius {
-                    if !player.loaded.contains(&(x, z)) && self.world.template.contains((x, z)) {
+                    if !player.loaded.contains(&(x, z))
+                        && (self.generation.is_some() || self.world.template.contains((x, z)))
+                    {
                         player.pending_cols.push((x, z));
                     }
                 }
@@ -734,10 +756,26 @@ impl Room {
                 -((dx * dx + dz * dz - (dx * dir[0] + dz * dir[1]).clamp(-0.9, 0.9)) * 100.) as i32
             });
         }
-        let cols = [player.pending_cols.pop(), player.pending_cols.pop()];
+        let mut cols = [None; 2];
+        // Keep missing entries in the priority list until the worker delivers them.
+        // Moving to another chunk rebuilds that list before anything is sent.
+        for &pos in player.pending_cols.iter().rev().take(2) {
+            if !self.world.contains(pos)
+                && let Some(generation) = &mut self.generation
+            {
+                generation.request(pos);
+            }
+        }
+        for slot in &mut cols {
+            if let Some(&pos) = player.pending_cols.last()
+                && self.world.contains(pos)
+            {
+                *slot = player.pending_cols.pop();
+            }
+        }
         for col in cols.into_iter().flatten() {
             self.mgr.metrics.chunk_lookups.fetch_add(1, Relaxed);
-            if self.world.template.cached(col) {
+            if self.world.template.cached(col) || self.world.generated.cached(col) {
                 self.mgr.metrics.chunk_hits.fetch_add(1, Relaxed);
             }
         }
@@ -764,7 +802,12 @@ impl Room {
         }
         for col in cols.into_iter().flatten() {
             if !grouped {
-                let Some(packet) = self.world.template.packet(col) else {
+                let Some(packet) = self
+                    .world
+                    .template
+                    .packet(col)
+                    .or_else(|| self.world.generated.packet(col))
+                else {
                     continue;
                 };
                 player.send(packet);

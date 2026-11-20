@@ -1,4 +1,5 @@
 pub(crate) const FIRST_ROOM_ENTITY: i32 = 1 << 30;
+mod drops;
 mod entity_view;
 mod windows;
 use crate::{
@@ -64,6 +65,7 @@ pub struct Player {
     center: Option<ColumnPos>,
     seen: HashMap<i32, u64>,
     seen_entities: HashMap<usize, entity_view::Seen>,
+    pickup_slots: [Packet; 36],
     revision: u64,
     moved_tick: f64,
     previous: [f64; 3],
@@ -142,6 +144,7 @@ impl Player {
             center: None,
             seen: HashMap::new(),
             seen_entities: HashMap::with_capacity(entity_view::CAPACITY),
+            pickup_slots: std::array::from_fn(|_| Packet::new(0, |_| {})),
             revision: 1,
             moved_tick: 0.,
             previous: [0.; 3],
@@ -475,6 +478,8 @@ impl Room {
                 i += 1;
             }
             self.entities.tick();
+            self.index_players();
+            self.tick_drops();
             self.circuit
                 .step(&mut self.world, self.tick, &mut self.changed);
             for &(pos, state) in &self.changed {
@@ -848,7 +853,7 @@ impl Room {
             }
             Action::Dig(status, pos) => {
                 let a = &mut self.players[i];
-                if !matches!(a.mode, 0 | 1) || !reachable(a, pos) {
+                if a.hp <= 0. || !matches!(a.mode, 0 | 1) || !reachable(a, pos) {
                     return None;
                 }
                 let before = self.world.block(pos);
@@ -877,19 +882,8 @@ impl Room {
                     }
                 };
                 if complete {
-                    if a.mode == 0
-                        && a.inv.add(Stack {
-                            id: if id == 2 { 3 } else { id as i16 },
-                            count: 1,
-                            damage: (before & 15) as i16,
-                        })
-                    {
-                        for (j, s) in a.inv.slots.iter().enumerate().skip(9) {
-                            a.send(p::slot(0, j as i16, *s));
-                        }
-                    }
-                    let _ = self.set_block(pos, 0);
-                    self.broadcast(p::effect(2001, pos, i32::from(before)));
+                    let survival = a.mode == 0;
+                    self.break_block(i, pos, before, survival);
                 }
             }
             Action::Place(pos, face) => {
@@ -1057,17 +1051,19 @@ impl Room {
             }));
         }
     }
-    fn visibility(&mut self) {
-        self.entity_view.index(&self.entities);
-        for viewer in &mut self.players {
-            self.entity_view
-                .update(&self.entities, &self.world, viewer, self.tick);
-        }
+    fn index_players(&mut self) {
         for v in self.grid.values_mut() {
             v.clear();
         }
         for (i, p) in self.players.iter().enumerate() {
             self.grid.entry(column(p.pos)).or_default().push(i);
+        }
+    }
+    fn visibility(&mut self) {
+        self.entity_view.index(&self.entities);
+        for viewer in &mut self.players {
+            self.entity_view
+                .update(&self.entities, &self.world, viewer, self.tick);
         }
         for i in 0..self.players.len() {
             let viewer = &self.players[i];

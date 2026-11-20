@@ -162,6 +162,37 @@ def server(prepare_db=None, **overrides):
 
 
 class PlayTests(unittest.TestCase):
+    def test_mined_item_can_be_picked_up_by_another_player(self):
+        with server() as (port, _):
+            miner = self.client(port)
+            miner.login("Alice")
+            miner.confirm_pos()
+            other = self.client(port)
+            other.login("Bob")
+            other.confirm_pos()
+            other.until(0x21)
+            # Protocol 47 block position (3,3,0), face up, survival grass.
+            block = struct.pack(">Q", (3 << 38) | (3 << 26))
+            miner.send(7, b"\x00" + block + b"\x01")
+            time.sleep(0.8)
+            miner.send(7, b"\x02" + block + b"\x01")
+            seen_ids = []
+            for c in (miner, other):
+                spawn = c.until(0x0e)
+                eid, offset = number(spawn)
+                seen_ids.append(eid)
+                self.assertEqual(spawn[offset], 2)
+                self.assertEqual(c.until(0x1c), var(eid) + bytes.fromhex("aa 0003 01 0000 00 7f"))
+            self.assertEqual(seen_ids[0], seen_ids[1])
+            other.send(4, struct.pack(">dddB", 3.5, 3., 0.5, 1))
+            self.assertEqual(other.until(0x2f), bytes.fromhex("00 0009 0003 01 0000 00"))
+            for c in (miner, other):
+                self.assertEqual(c.until(0x13), b"\x01" + var(eid))
+            # The miner's first storage slot must still be empty after Bob collects.
+            miner.send(0x0e, bytes.fromhex("00 0009 00 0001 00 ffff"))
+            self.assertEqual(miner.until(0x32), bytes.fromhex("00 0001 01"))
+            self.assertEqual(miner.until(0x2f), bytes.fromhex("ff ffff ffff"))
+
     def test_profile_command_grants(self):
         def grant(db):
             uid = uuid.UUID(bytes=hashlib.md5(b"OfflinePlayer:Bob").digest(), version=3)

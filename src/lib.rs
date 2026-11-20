@@ -18,3 +18,7 @@ mod redstone;
 mod scripts;
 mod selector;
 pub mod wire;
+
+#[cfg(test)]
+#[path = "../tests/support/allocations.rs"]
+mod allocations;

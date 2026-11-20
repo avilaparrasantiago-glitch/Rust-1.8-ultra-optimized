@@ -105,6 +105,16 @@ impl EntityArena {
     pub fn iter(&self) -> impl ExactSizeIterator<Item = (EntityId, &Entity)> {
         self.active.iter().map(|(id, entity)| (*id, entity))
     }
+    pub(crate) fn retain_mut(&mut self, mut keep: impl FnMut(&mut Entity) -> bool) {
+        // swap_remove moves only an already visited entry when traversing backwards.
+        for i in (0..self.active.len()).rev() {
+            let (id, entity) = &mut self.active[i];
+            if !keep(entity) {
+                let id = *id;
+                self.remove(id);
+            }
+        }
+    }
 
     pub fn tick(&mut self) {
         for (_, entity) in &mut self.active {

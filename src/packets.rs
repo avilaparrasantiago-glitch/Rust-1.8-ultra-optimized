@@ -174,18 +174,19 @@ pub struct Stack {
     pub damage: i16,
 }
 pub fn slot(window: i8, index: i16, item: Option<Stack>) -> Packet {
-    Packet::new(0x2f, |w| {
-        w.put_i8(window);
-        w.put_i16(index);
-        if let Some(i) = item {
-            w.put_i16(i.id);
-            w.put_u8(i.count);
-            w.put_i16(i.damage);
-            w.put_u8(0);
-        } else {
-            w.put_i16(-1);
-        }
-    })
+    Packet::new(0x2f, |w| slot_fields(w, window, index, item))
+}
+pub(crate) fn slot_fields(w: &mut bytes::BytesMut, window: i8, index: i16, item: Option<Stack>) {
+    w.put_i8(window);
+    w.put_i16(index);
+    if let Some(i) = item {
+        w.put_i16(i.id);
+        w.put_u8(i.count);
+        w.put_i16(i.damage);
+        w.put_u8(0);
+    } else {
+        w.put_i16(-1);
+    }
 }
 pub struct MapPatch<'a> {
     pub x: u8,

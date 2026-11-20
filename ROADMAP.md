@@ -39,7 +39,7 @@ Revisión de la base `396734a` y del bloque T5.1. «Probado» identifica un reco
 |---|---|---|
 | Combate y supervivencia | `Room::movement`, `Room::attack`, `Player::harm` y `Room::advance` contienen alcance, visión, críticos, knockback, caída, vacío y regeneración básica. | Raycast AABB con compensación de latencia, perfiles de knockback, bloqueo, daño ambiental, hambre y pociones. |
 | Inventario, crafting y redstone | T4.4 tiene prueba Rust y vectores TCP. `crafting.rs`, `engine/windows.rs` y `redstone.rs` contienen recetas, horno y propagación con presupuesto. | Paridad de recetas, transacciones, yunque, encantamientos, comparadores, hoppers y restantes mecanismos. |
-| Entidades | T1.1 y T1.2 tienen pruebas de capacidad, generaciones y difusión. La rotura en supervivencia entrega el bloque directamente al inventario. | Objetos recogibles, orbes, IA, búsqueda de caminos, comercio y dimensiones. |
+| Entidades | T1.1 y T1.2 tienen pruebas de capacidad, generaciones y difusión. La rotura en supervivencia crea objetos que caen y se recogen por contacto (T1.3). | Orbes, IA, búsqueda de caminos, comercio y dimensiones. |
 | Comandos y autorización | `commands::REGISTRY`, `allowed`, `Selector::resolve`. Niveles 0–4 y nodos por UUID. T5.1 comprueba la integración con SQL. | El selector @e solo recorre jugadores. El registro, el chat y los subcomandos de mundo cubren parte del encargo. |
 
 ### 5. Scripting — PARCIAL
@@ -57,7 +57,7 @@ Revisión de la base `396734a` y del bloque T5.1. «Probado» identifica un reco
 | Malla, proxy y cola | `mesh.rs` publica chat en NATS y heartbeat en Redis. La suite TCP ejercita forwarding firmado, rechazo de repetición y promoción de cola. | Ensayo con dos nodos y servicios reales, grupos, amigos, matchmaking, conmutación de backend y consumo de memoria en limbo. |
 | Métricas, orquestación y XDP | `metrics.rs` expone HTTP, histograma de duración y contadores de bytes y caché. `linux/coral_xdp.c` contiene el filtro SYN. | Métrica de entidades activas, control plane gRPC y validación de XDP en una NIC Linux. |
 
-**Falta implementación** de I/O por núcleo (T3.1–T3.2), MapChunkBulk (T2.2), drops y orbes (T1.3–T1.4), IA y comercio (T4.3/T4.5), API Luau de mundo (T5.4), control plane y ScyllaDB (T6.1–T6.2). Los ensayos Linux, multinodo y de carga son verificaciones adicionales. La evidencia de esta revisión fue `cargo check --workspace`, Clippy con advertencias como errores, nextest 8/8, TCP 5/5 y las comprobaciones locales de Anvil y recarga Luau descritas arriba.
+**Falta implementación** de I/O por núcleo (T3.1–T3.2), MapChunkBulk (T2.2), orbes (T1.4), IA y comercio (T4.3/T4.5), API Luau de mundo (T5.4), control plane y ScyllaDB (T6.1–T6.2). Los ensayos Linux, multinodo y de carga son verificaciones adicionales. La evidencia de esta revisión fue `cargo check --workspace`, Clippy con advertencias como errores, nextest 8/8, TCP 5/5 y las comprobaciones locales de Anvil y recarga Luau descritas arriba.
 
 Higiene: repositorio Git local inicializado. La instantánea original de 36 archivos está en `main` (commit `02d8688`).
 
@@ -80,7 +80,9 @@ Orden: núcleo de memoria/ECS y Protocolo 47 antes que comandos y orquestación.
 - [x] **T1.2** Difusión de aparición, movimiento y retirada desde `Room::visibility`. El índice por columna respeta las columnas cargadas, la distancia y la línea de visión. El observador distingue generaciones al reutilizar una plaza. Los identificadores de red de estas entidades empiezan en 2³⁰.
   - `src/engine/entity_view.rs`, `src/wire.rs` y `src/network.rs` reutilizan paquetes compartidos y una cola de salida acotada. Si una versión sigue en tránsito, el siguiente recorrido reintenta el envío con la posición vigente.
   - `src/engine/entity_view_tests.rs` comprueba vectores de Protocolo 47, dos observadores, reutilización de plaza y entrega por tandas de 400 apariciones y retiradas. En Windows x64, perfil de pruebas, el recorrido de visibilidad de 32 mobs durante 200 ticks tras calentamiento encoló 6400 movimientos con cero asignaciones en el hilo medido. Check y Clippy limpios, nextest 8/8 y regresiones TCP 4/4.
-- [ ] **T1.3** Drops de items al romper bloque + pickup por AABB (reutilizar física de engine.rs:925-973).
+- [x] **T1.3** La rotura válida en supervivencia reserva la entidad antes de editar el bloque. En creativo se edita sin generar objeto. `src/engine/drops.rs` aplica caída, espera de 10 ticks, recogida por caja de colisión y caducidad a los 6000 ticks. Reutiliza el índice de jugadores por columna y los buffers de casilla; conserva el objeto si falla la inserción en inventario.
+  - `tests/protocol47.py` verifica dos observadores del mismo objeto, metadatos del bloque de tierra, recogida por el segundo jugador, retirada para ambos y casilla vacía del minero. La prueba Rust cubre inventario lleno, numeración de ventana de horno, reintento y cero asignaciones durante 200 recogidas después del calentamiento.
+  - Se conserva la equivalencia bloque/objeto previa (césped a tierra). Tablas completas de botín, herramientas y encantamientos siguen pendientes.
 - [ ] **T1.4** Orbes de XP (spawn al matar, imán, recoger) sobre la misma arena.
 
 ### Fase 2 — Protocolo 47: chunks y culling
@@ -122,4 +124,4 @@ Orden: núcleo de memoria/ECS y Protocolo 47 antes que comandos y orquestación.
 
 ## Siguiente bloque
 
-**T1.3** — Crear el objeto correspondiente al romper un bloque y recogerlo al entrar en la caja de colisión del jugador. Verificar por TCP la aparición del objeto y su retirada tras incorporarlo al inventario.
+**T1.4** — Crear orbes de experiencia al matar, acercarlos a jugadores elegibles y acreditar XP una sola vez al recogerlos. Verificar aparición, actualización de experiencia y retirada por TCP.

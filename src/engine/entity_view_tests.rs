@@ -43,8 +43,7 @@ fn spawn_body_matches_protocol_47() {
     }
 }
 
-#[path = "../../tests/support/allocations.rs"]
-mod allocations;
+use crate::allocations;
 use crate::{arena::Template, identity::offline};
 use crossbeam_channel::{Receiver, bounded};
 use std::{net::Ipv4Addr, sync::Arc};

@@ -1,3 +1,4 @@
+mod drops;
 mod entity_visibility;
 mod windows;
 use crate::{
@@ -443,6 +444,7 @@ impl Room {
                 i += 1;
             }
             self.entities.tick();
+            drops::collect_items(&mut self.entities, &mut self.players);
             self.circuit
                 .step(&mut self.world, self.tick, &mut self.changed);
             for &(pos, state) in &self.changed {
@@ -816,7 +818,7 @@ impl Room {
             }
             Action::Dig(status, pos) => {
                 let a = &mut self.players[i];
-                if !matches!(a.mode, 0 | 1) || !reachable(a, pos) {
+                if a.hp <= 0. || !matches!(a.mode, 0 | 1) || !reachable(a, pos) {
                     return None;
                 }
                 let before = self.world.block(pos);
@@ -845,19 +847,8 @@ impl Room {
                     }
                 };
                 if complete {
-                    if a.mode == 0
-                        && a.inv.add(Stack {
-                            id: if id == 2 { 3 } else { id as i16 },
-                            count: 1,
-                            damage: (before & 15) as i16,
-                        })
-                    {
-                        for (j, s) in a.inv.slots.iter().enumerate().skip(9) {
-                            a.send(p::slot(0, j as i16, *s));
-                        }
-                    }
-                    let _ = self.set_block(pos, 0);
-                    self.broadcast(p::effect(2001, pos, i32::from(before)));
+                    let survival = a.mode == 0;
+                    self.break_block(i, pos, before, survival);
                 }
             }
             Action::Place(pos, face) => {

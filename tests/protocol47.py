@@ -196,6 +196,26 @@ class PlayTests(unittest.TestCase):
             with urllib.request.urlopen(f"http://127.0.0.1:{metrics}/metrics") as r:
                 self.assertIn("coral_players 2", r.read().decode())
 
+    def test_survival_block_drop_and_pickup(self):
+        with server() as (port, _):
+            a = self.client(port)
+            a.login("Alice")
+            a.confirm_pos()
+            a.until(0x21)
+            pos = struct.pack(">Q", (3 << 38) | (3 << 26))
+            a.send(7, b"\x00" + pos + b"\x01")
+            time.sleep(0.8)
+            a.send(7, b"\x02" + pos + b"\x01")
+            spawn = a.until(0x0e)
+            eid, offset = number(spawn)
+            self.assertEqual(spawn[offset], 2)
+            self.assertEqual(a.until(0x1c), var(eid) + bytes.fromhex("aa0003010000007f"))
+            a.chat("/tp Alice 3.5 4 0.5")
+            a.confirm_pos()
+            self.assertTrue(a.until(0x0d).startswith(var(eid)))
+            self.assertEqual(a.until(0x2f), struct.pack(">bhhBhB", 0, 9, 3, 1, 0, 0))
+            self.assertEqual(a.until(0x13), var(1) + var(eid))
+
     def test_queue_promotion(self):
         with server(max_players=1) as (port, _):
             a = self.client(port)

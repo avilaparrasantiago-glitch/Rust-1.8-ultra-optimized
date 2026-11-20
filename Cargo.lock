@@ -275,37 +275,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 
 [[package]]
-name = "coral-engine"
-version = "0.1.0"
-dependencies = [
- "async-nats",
- "bytes",
- "core_affinity",
- "criterion",
- "crossbeam-channel",
- "fastnbt",
- "flate2",
- "futures-util",
- "hmac",
- "libdeflater",
- "md-5",
- "memmap2",
- "mlua",
- "percent-encoding",
- "rayon",
- "redis",
- "serde",
- "serde_json",
- "sha2",
- "sqlx",
- "tempfile",
- "tokio",
- "tokio-uring",
- "uuid",
- "zstd",
-]
-
-[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2313,6 +2282,37 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.10",
+]
+
+[[package]]
+name = "syrust-engine"
+version = "0.1.0"
+dependencies = [
+ "async-nats",
+ "bytes",
+ "core_affinity",
+ "criterion",
+ "crossbeam-channel",
+ "fastnbt",
+ "flate2",
+ "futures-util",
+ "hmac",
+ "libdeflater",
+ "md-5",
+ "memmap2",
+ "mlua",
+ "percent-encoding",
+ "rayon",
+ "redis",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tokio-uring",
+ "uuid",
+ "zstd",
 ]
 
 [[package]]

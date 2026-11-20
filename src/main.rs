@@ -1,4 +1,4 @@
-use coral_engine::{
+use syrust_engine::{
     arena::Template,
     config::{Config, Terrain, persistent_seed},
     engine::Manager,
@@ -17,11 +17,11 @@ fn main() -> io::Result<()> {
     }
     if let [action, src, dst] = args.as_slice() {
         if action == "region-import" {
-            return coral_engine::anvil::import(Path::new(src))?.save(Path::new(dst));
+            return syrust_engine::anvil::import(Path::new(src))?.save(Path::new(dst));
         }
         if action == "region-export" {
             std::fs::create_dir(dst)?;
-            return coral_engine::anvil::export(
+            return syrust_engine::anvil::export(
                 Path::new(dst),
                 &Template::load(Path::new(src))?,
                 &Default::default(),
@@ -37,7 +37,7 @@ fn main() -> io::Result<()> {
         [a, path] if a == "--config" => Some(Path::new(path)),
         _ => {
             return Err(invalid(
-                "usage: coral [--config FILE | config | arena-create FILE]",
+                "usage: syrust [--config FILE | config | arena-create FILE]",
             ));
         }
     };
@@ -68,13 +68,13 @@ fn main() -> io::Result<()> {
             .as_ref()
             .map(|k| std::env::var(k).map_err(|_| invalid("missing database URL")))
             .transpose()?;
-        let profiles = coral_engine::profiles::Profiles::open(
+        let profiles = syrust_engine::profiles::Profiles::open(
             &manager.cfg.data_dir,
             url,
             manager.cfg.max_players,
         )
         .await?;
-        coral_engine::mesh::start(manager.clone()).await?;
+        syrust_engine::mesh::start(manager.clone()).await?;
         let result = tokio::select! {r=network::serve(manager.clone(),profiles.clone(),secret)=>r,r=tokio::signal::ctrl_c()=>r};
         manager.shutdown();
         profiles.close().await?;

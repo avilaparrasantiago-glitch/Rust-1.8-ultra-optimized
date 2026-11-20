@@ -170,7 +170,7 @@ pub async fn serve(
         ids: Default::default(),
     });
     let handshakes = Arc::new(Semaphore::new(512));
-    eprintln!("Coral Protocol 47 listening on {}", net.manager.cfg.listen);
+    eprintln!("SyRust Protocol 47 listening on {}", net.manager.cfg.listen);
     loop {
         let (stream, peer) = listener.accept().await?;
         let Ok(permit) = handshakes.clone().try_acquire_owned() else {
@@ -233,7 +233,7 @@ async fn handshake(
         }
         r.end()?;
         let cfg = &net.manager.cfg;
-        let reply = serde_json::json!({"version":{"name":"Coral 1.8.8ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ1.8.9","protocol":47},"players":{"max":cfg.max_players,"online":net.manager.metrics.players.load(Relaxed)},"description":{"text":cfg.motd}});
+        let reply = serde_json::json!({"version":{"name":"SyRust 1.8.8-1.8.9","protocol":47},"players":{"max":cfg.max_players,"online":net.manager.metrics.players.load(Relaxed)},"description":{"text":cfg.motd}});
         sock.send(Packet::new(0, |w| w.string(&reply.to_string())), None)
             .await?;
         let b = next(rx).await?;

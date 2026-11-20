@@ -1,5 +1,5 @@
 use bytes::BytesMut;
-use coral_engine::{arena::Template, wire::{Packet,WriteWire}};
+use syrust_engine::{arena::Template, wire::{Packet,WriteWire}};
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::{hint::black_box,sync::Arc};
 
@@ -14,7 +14,7 @@ fn measure(c:&mut Criterion){
     let dir=tempfile::tempdir().unwrap();let path=dir.path().join("arena.car");
     template.save(&path).unwrap();
     c.bench_function("arena/read_zstd_81_columns",|b|b.iter(||black_box(Template::load(&path).unwrap())));
-    c.bench_function("arena/instantiate_warm_template",|b|b.iter(||black_box(coral_engine::arena::World::new("match".into(),template.clone()))));
+    c.bench_function("arena/instantiate_warm_template",|b|b.iter(||black_box(syrust_engine::arena::World::new("match".into(),template.clone()))));
 }
 fn chunk_packets(c: &mut Criterion) {
     c.bench_function("chunk/first_packet", |b| {

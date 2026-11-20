@@ -22,7 +22,7 @@ fn git_keeps_project_files_and_ignores_local_artifacts() -> Result<(), Box<dyn E
         "src/main.rs",
         "tests/protocol47.py",
         "data/seed",
-        "target/debug/coral",
+        "target/debug/syrust",
         "server.log",
         "tests/tcp.log",
         "tools/__pycache__/rust_mcp.pyc",

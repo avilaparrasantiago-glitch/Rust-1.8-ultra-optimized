@@ -1,4 +1,4 @@
-"""Independent TCP interoperability checks for a local Coral binary (Python standard library)."""
+"""Independent TCP interoperability checks for a local SyRust binary (Python standard library)."""
 import contextlib
 import hashlib
 import hmac
@@ -16,7 +16,7 @@ import uuid
 import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
-BINARY = Path(os.environ.get("CORAL_BIN", ROOT / "target" / "debug" / ("coral.exe" if os.name == "nt" else "coral"))).resolve()
+BINARY = Path(os.environ.get("SYRUST_BIN") or os.environ.get("CORAL_BIN", ROOT / "target" / "debug" / ("syrust.exe" if os.name == "nt" else "syrust"))).resolve()
 
 
 def var(n):

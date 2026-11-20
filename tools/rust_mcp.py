@@ -41,7 +41,7 @@ def hover(path, line, column):
     try:
         send(dict(id=1, method="initialize", params=dict(processId=os.getpid(), rootUri=ROOT.as_uri(),
              capabilities={"experimental": {"serverStatusNotification": True}},
-             workspaceFolders=[{"uri": ROOT.as_uri(), "name": "Coral"}])))
+             workspaceFolders=[{"uri": ROOT.as_uri(), "name": "SyRust"}])))
         while read().get("id") != 1:
             pass
         send(dict(method="initialized", params={}))

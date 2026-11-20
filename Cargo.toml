@@ -1,11 +1,11 @@
 [package]
-name = "coral-engine"
+name = "syrust-engine"
 version = "0.1.0"
 edition = "2024"
-default-run = "coral"
+default-run = "syrust"
 
 [[bin]]
-name = "coral"
+name = "syrust"
 path = "src/main.rs"
 
 [dependencies]

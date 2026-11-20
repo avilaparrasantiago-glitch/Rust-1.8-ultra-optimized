@@ -1,4 +1,8 @@
-You are tasked with architecting and advancing Coral, a next-generation Minecraft 1.8.8 / 1.8.9 (Protocol 47) server engine and distributed network ecosystem written in Rust with strategic low-level native integrations. The foundational network stack, chunk packet lightweight bitmask optimizations, dynamic spawn calculation, persistent seed, and basic command/chat routing are already established.
+# SyRust
+
+SyRust is an independent Rust project. Use only the Minecraft references supplied by the project owner. The external Coral repository is excluded as a source of code, design and documentation.
+
+You are tasked with architecting and advancing SyRust, a next-generation Minecraft 1.8.8 / 1.8.9 (Protocol 47) server engine and distributed network ecosystem written in Rust with strategic low-level native integrations. The foundational network stack, chunk packet lightweight bitmask optimizations, dynamic spawn calculation, persistent seed, and basic command/chat routing are already established.
 
 
 Your objective is to implement the remaining engine subsystems, protocol-level optimizations, and distributed network primitives required for a 100% complete, production-ready, planetary-scale network capable of sustaining 200,000 to 1,000,000+ concurrent players at deterministic 20.0 TPS (50ms tick budget).
@@ -146,7 +150,7 @@ Prioritized Generation Queue: Order chunk loading/generation by player look vect
 
 **Implementation rule.** Implement world generation, simulation, structures, redstone and commands in Rust. Use only technologies already named in this architecture. Reuse the engine's dense arenas, paletted columns, Rayon workers, bounded channels, immutable shared packets and libdeflate where they serve those paths. External reference implementations and the official server are offline measurement tools. Ship the Rust implementation with independently verified outputs. Optimize against the same inputs and outputs before accepting a faster algorithm.
 
-Persist the generator identity and revision, seed, world type, options and dimension with each world. Existing Coral normal worlds regenerate distant columns from their original algorithm and sparse edits. Keep that algorithm available for those saves. Give new vanilla-compatible worlds a distinct identity and check it on reopen. Keep imported Anvil terrain authoritative and preserve flat templates and in-memory minigame arenas.
+Persist the generator identity and revision, seed, world type, options and dimension with each world. Existing SyRust normal worlds regenerate distant columns from their original algorithm and sparse edits. Keep that algorithm available for those saves. Give new vanilla-compatible worlds a distinct identity and check it on reopen. Keep imported Anvil terrain authoritative and preserve flat templates and in-memory minigame arenas.
 
 | Dimension | Required output for the default 1.8 generator |
 |---|---|
@@ -175,7 +179,7 @@ Implement exact vanilla 1.8.8/1.8.9 combat mechanics: configurable knockback vec
 Implement all environmental damage pipelines: fall distance calculation, fire/lava ticks, drowning, potion/poison ticks, void damage, and saturation/hunger-based natural regeneration.
 
 
-Entities, AI & Spatial Pathfinding (coral-server/src/mob/[ai.rs](http://ai.rs/))
+Entities, AI & Spatial Pathfinding (Rust)
 
 
 
@@ -252,13 +256,13 @@ The official `ServerCommandManager` constructor registers 43 shared canonical co
 | Execution, messages and events | debug, execute, help, me, particle, playsound, say, scoreboard, stats, tell, tellraw, testfor, title, trigger |
 | Dedicated administration | ban, ban-ip, banlist, deop, kick, list, op, pardon, pardon-ip, save-all, save-off, save-on, setidletimeout, stop, whitelist |
 
-Test `?` for help and `w`/`msg` for tell. Teams use `scoreboard teams`. Coral's `/world load|unload|import|clone|tp`, `team`, `gm`, `teleport` and `experience` are extensions. Maintain command-specific grammar, relative coordinates, 1.8 identifiers, JSON chat and typed Mojangson NBT, including lists, compounds and numeric suffixes. Match selector positional shorthand, box/radius/rotation/level/score filters, negation where supported, count/order and entity eligibility. Test as player, console and command block at permission levels 0–4. Capture actual changes, result statistics, usage/errors, tab suggestions and visibility of administrative operations.
+Test `?` for help and `w`/`msg` for tell. Teams use `scoreboard teams`. SyRust's `/world load|unload|import|clone|tp`, `team`, `gm`, `teleport` and `experience` are extensions. Maintain command-specific grammar, relative coordinates, 1.8 identifiers, JSON chat and typed Mojangson NBT, including lists, compounds and numeric suffixes. Match selector positional shorthand, box/radius/rotation/level/score filters, negation where supported, count/order and entity eligibility. Test as player, console and command block at permission levels 0–4. Capture actual changes, result statistics, usage/errors, tab suggestions and visibility of administrative operations.
 
 ### Reference material and scope
 
 The two official server artifacts identify the behavior under test. For this specification the dedicated command constructor was inspected in both, and the final biome grid was executed in each. The artifact SHA-1s are `5fafba3f58c40dc51b5c3ca72a98f62dfdae1db7` (1.8.8) and `b58b2ceb36e01bcd8dbf49c8fb66c55a9f0676cd` (1.8.9). The reproducible biome vector is in ROADMAP T2.4a. MCP mappings identify the obfuscated classes for inspection. [Mojang 1.8.8 metadata](https://piston-meta.mojang.com/v1/packages/690172f1227e1c1d2fa8fceadd0f578f7851a69e/1.8.8.json) · [Mojang 1.8.9 metadata](https://piston-meta.mojang.com/v1/packages/d546f1707a3f2b7d034eece5ea2e311eda875787/1.8.9.json) · [MCP 1.8.9 SRG mappings](https://maven.minecraftforge.net/de/oceanlabs/mcp/mcp/1.8.9/mcp-1.8.9-srg.zip) · [RetroMCP workflow](https://github.com/MCPHackers/RetroMCP-Java/tree/9ece383d9bfe993d763d75b503e913f0dfbd8852)
 
-Use cubiomes at `MC_1_8` for independent layer maps and structure candidates/biome viability. SeedFinding provides a second reading of the seed, biome and density algorithms. Its terrain constructor explicitly labels versions before 1.11 untested. Use official worlds for final block placement, decoration, light and NBT. [cubiomes layers](https://github.com/Cubitect/cubiomes/blob/e61f90580cbdd883214a8054670dacae655e59c0/generator.c) · [structure finders](https://github.com/Cubitect/cubiomes/blob/e61f90580cbdd883214a8054670dacae655e59c0/finders.h) · [SeedFinding terrain version check](https://github.com/SeedFinding/mc_terrain_java/blob/a03e440ec5b282e399382f2cc5ad0db91b438d2e/src/main/java/com/seedfinding/mcterrain/TerrainGenerator.java) · [biome layers](https://github.com/SeedFinding/mc_biome_java/tree/17af8cb1110fdc983b7cb2b887d1fb2060e23ee3) · [seed and random streams](https://github.com/SeedFinding/mc_seed_java/tree/55f6242001f7eb4226df4ed0d023f1838a54a99d) · [math](https://github.com/SeedFinding/mc_math_java/tree/851e9d0577dfdca50154e98f1d334bd31c641326) · [PrismarineJS 1.8 packet schema](https://github.com/PrismarineJS/minecraft-data/blob/master/data/pc/1.8/proto.yml)
+Use cubiomes at `MC_1_8` for independent layer maps and structure candidates/biome viability. SeedFinding provides a second reading of the seed, biome and density algorithms. Its terrain constructor explicitly labels versions before 1.11 untested. Use official worlds for final block placement, decoration, light and NBT. [cubiomes layers](https://github.com/Cubitect/cubiomes/blob/e61f90580cbdd883214a8054670dacae655e59c0/generator.c) · [structure finders](https://github.com/Cubitect/cubiomes/blob/e61f90580cbdd883214a8054670dacae655e59c0/finders.h) · [SeedFinding terrain version check](https://github.com/SeedFinding/mc_terrain_java/blob/a03e440ec5b282e399382f2cc5ad0db91b438d2e/src/main/java/com/seedfinding/mcterrain/TerrainGenerator.java) · [biome layers](https://github.com/SeedFinding/mc_biome_java/tree/17af8cb1110fdc983b7cb2b887d1fb2060e23ee3) · [seed and random streams](https://github.com/SeedFinding/mc_seed_java/tree/55f6242001f7eb4226df4ed0d023f1838a54a99d) · [math](https://github.com/SeedFinding/mc_math_java/tree/851e9d0577dfdca50154e98f1d334bd31c641326)
 
 
 Stateless Edge Proxy & Limbo/Queue Layer

@@ -1,6 +1,6 @@
-# Rust 1.8 Ultra Optimized ⚡
+# SyRust
 
-A next-generation, ultra-high-performance **Minecraft 1.8.8 / 1.8.9 (Protocol 47)** server engine and distributed network core written in **Rust**.
+SyRust is a next-generation, ultra-high-performance **Minecraft 1.8.8 / 1.8.9 (Protocol 47)** server engine and distributed network core written in **Rust**.
 
 Built from the ground up to eliminate JVM garbage collection pauses, lock contention, and disk I/O bottlenecks—delivering deterministic **20.0 TPS (50ms tick budget)** and extreme hardware density capable of scaling from single competitive arenas to planetary-scale networks (**200,000 – 1,000,000+ CCU**).
 

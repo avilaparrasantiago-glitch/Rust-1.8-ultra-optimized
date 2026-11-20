@@ -1,4 +1,6 @@
-# Coral · instrucciones para Codex
+# SyRust · instrucciones para Codex
+
+SyRust es un proyecto propio. Usar exclusivamente las fuentes de Minecraft que el usuario aportó en los dos textos de referencia. El repositorio externo Coral queda excluido como fuente de código, diseño y documentación. Implementar en Rust y verificar el comportamiento con los servidores oficiales indicados.
 
 Lee ARCHITECTURE.md y ROADMAP.md al iniciar cada chat. El primero contiene el encargo original. El segundo recoge el estado comprobado. Elige un único punto del roadmap por iteración.
 

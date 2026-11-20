@@ -1,4 +1,4 @@
-use coral_engine::{
+use syrust_engine::{
     entities::{Entity, EntityArena, EntityKind},
     packets::Stack,
 };
@@ -104,7 +104,7 @@ fn tick_advances_entities_across_columns_without_allocating_after_warmup() {
 
 #[test]
 fn cached_column_packet_needs_no_new_allocation() {
-    let template = coral_engine::arena::Template::flat(0);
+    let template = syrust_engine::arena::Template::flat(0);
     let first = template.packet((0, 0)).unwrap();
     ALLOCATIONS.with(|count| count.set(Some(0)));
     for _ in 0..1024 {

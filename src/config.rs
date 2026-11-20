@@ -51,7 +51,7 @@ impl Default for Config {
             terrain: Terrain::Normal,
             arena_file: None,
             data_dir: "data".into(),
-            motd: "Coral Ã‚Â· Protocol 47".into(),
+            motd: "SyRust · Protocol 47".into(),
             operators: BTreeMap::new(),
             permissions: BTreeMap::new(),
             database_url_env: None,

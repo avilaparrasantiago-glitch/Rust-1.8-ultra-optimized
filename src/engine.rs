@@ -305,7 +305,7 @@ impl Manager {
             let (s, t, edits) = crate::persistence::Store::open(
                 &self.cfg.data_dir.join(name).join("region"),
                 self.template.clone(),
-                normal,
+                normal.then_some(self.seed),
             )?;
             (Some(s), t, edits)
         } else {

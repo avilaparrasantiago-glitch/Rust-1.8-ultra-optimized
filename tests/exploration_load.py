@@ -43,9 +43,14 @@ def run():
             idle = rss(proc)
             clients = [Client(port, 2), Client(port, 2)]
             try:
+                first_column_ms = []
                 for client, name in zip(clients, ("Alice", "Bob")):
+                    login_start = time.perf_counter_ns()
                     client.login(name)
                     client.confirm_pos()
+                    client.until(0x26)
+                    first_column_ms.append((time.perf_counter_ns() - login_start) / 1e6)
+                initial_bytes = [client.received_bytes for client in clients]
                 before = metrics(monitoring)
                 start = time.monotonic()
                 peak = rss(proc)
@@ -71,6 +76,10 @@ def run():
                                       p99_upper_seconds=bounds[0], overruns=diff["coral_tick_overruns_total"],
                                       generated_columns=columns,
                                       cold_mean_us=diff["coral_generation_nanoseconds_total"]/columns/1000,
+                                      login_to_first_bulk_ms=first_column_ms,
+                                      exploration_bytes_read_per_player=[
+                                          c.received_bytes - n for c, n in zip(clients, initial_bytes)
+                                      ],
                                       idle_RSS=idle, peak_sampled_RSS=peak, players=2), indent=2))
             finally:
                 for client in clients:

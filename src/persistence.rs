@@ -16,7 +16,7 @@ pub struct Store {
     worker: Option<JoinHandle<io::Result<()>>>,
 }
 impl Store {
-    pub fn open(dir: &Path, base: Arc<Template>, normal: bool) -> io::Result<Opened> {
+    pub fn open(dir: &Path, base: Arc<Template>, seed: Option<i64>) -> io::Result<Opened> {
         std::fs::create_dir_all(dir)?;
         let lease = std::fs::OpenOptions::new()
             .create(true)
@@ -24,6 +24,16 @@ impl Store {
             .write(true)
             .open(dir.join(".coral-owner"))?;
         lease.try_lock().map_err(io::Error::other)?;
+        let normal = seed.is_some();
+        let marker = dir.join("generator.json");
+        if marker.try_exists()? {
+            let saved: GeneratorIdentity = serde_json::from_reader(File::open(&marker)?)?;
+            if Some(saved) != seed.map(GeneratorIdentity::legacy) {
+                return Err(crate::wire::invalid(
+                    "generator identity differs from saved world",
+                ));
+            }
+        }
         let exists = std::fs::read_dir(dir)?
             .filter_map(Result::ok)
             .any(|e| e.path().extension().is_some_and(|x| x == "mca"));
@@ -39,6 +49,14 @@ impl Store {
         } else {
             Edits::new()
         };
+        if let Some(seed) = seed
+            && !marker.try_exists()?
+        {
+            let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+            serde_json::to_writer(&mut tmp, &GeneratorIdentity::legacy(seed))?;
+            tmp.as_file().sync_all()?;
+            tmp.persist_noclobber(marker).map_err(|e| e.error)?;
+        }
         let world = template.clone();
         let dir = dir.to_owned();
         let (tx, rx) = crossbeam_channel::bounded(1);
@@ -87,6 +105,28 @@ impl Store {
             .unwrap()
             .join()
             .map_err(|_| io::Error::other("Anvil worker panicked"))?
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct GeneratorIdentity {
+    dimension: i32,
+    algorithm: String,
+    revision: u32,
+    options: String,
+    seed: i64,
+}
+
+impl GeneratorIdentity {
+    fn legacy(seed: i64) -> Self {
+        Self {
+            dimension: 0,
+            algorithm: "syrust-overworld".into(),
+            revision: 1,
+            options: String::new(),
+            seed,
+        }
     }
 }
 
@@ -146,4 +186,31 @@ fn read_deltas(path: &Path) -> io::Result<Edits> {
             .insert((x, y[0], z), u16::from_le_bytes(state));
     }
     Ok(edits)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adoption_preserves_legacy_deltas_and_rejects_another_seed() -> io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let base = Arc::new(Template::flat(1));
+        let mut edits = Edits::new();
+        edits
+            .entry((-10, 18))
+            .or_default()
+            .insert((-160, 72, 288), 17);
+        let path = dir.path().join("generated.edits");
+        write_deltas(dir.path(), &path, &base, &edits)?;
+        let original = std::fs::read(&path)?;
+        let (mut store, _, loaded) = Store::open(dir.path(), base.clone(), Some(-72))?;
+        assert_eq!(*loaded, edits);
+        store.close(loaded)?;
+        assert_eq!(std::fs::read(&path)?, original);
+        assert!(Store::open(dir.path(), base.clone(), Some(42)).is_err());
+        let (mut store, _, reopened) = Store::open(dir.path(), base, Some(-72))?;
+        assert_eq!(*reopened, edits);
+        store.close(reopened)
+    }
 }

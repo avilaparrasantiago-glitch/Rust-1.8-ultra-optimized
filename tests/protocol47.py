@@ -59,6 +59,7 @@ class Client:
     def __init__(self, port, state, host="localhost"):
         self.s = socket.create_connection(("127.0.0.1", port), timeout=4)
         self.threshold = None
+        self.received_bytes = 0
         self.send(0, var(47) + string(host) + struct.pack(">H", port) + var(state))
 
     def send(self, pid, data=b""):
@@ -83,6 +84,7 @@ class Client:
             if not part:
                 raise EOFError()
             data += part
+        self.received_bytes += len(prefix) + size
         if self.threshold is not None:
             declared, offset = number(data)
             data = data[offset:]
@@ -292,6 +294,13 @@ class PlayTests(unittest.TestCase):
             self.assertIn(surface >> 4, (2, 12))
             self.assertEqual(struct.unpack_from("<H", bulk, blocks)[0], 7 << 4)
 
+            single = a.until(0x21)
+            b = self.client(port)
+            b.login("Bob")
+            b.confirm_pos()
+            self.assertEqual(b.until(0x26), bulk)
+            self.assertEqual(b.until(0x21), single)
+
     def test_explore_edit_and_reopen(self):
         with tempfile.TemporaryDirectory() as world_dir:
             settings = dict(arena_file=None, terrain="normal", worlds=["lobby"],
@@ -299,6 +308,10 @@ class PlayTests(unittest.TestCase):
                             operators={str(uuid.UUID(bytes=hashlib.md5(f"OfflinePlayer:{n}".encode()).digest(),
                                                      version=3)): 4 for n in ("Alice", "Bob")})
             for restart in (False, True):
+                marker = Path(world_dir) / "lobby/region/generator.json"
+                if restart:
+                    # The previous SyRust format had the seed, Anvil and edits only.
+                    marker.unlink()
                 with server(**settings) as (port, _):
                     a = self.client(port)
                     name = "Bob" if restart else "Alice"
@@ -306,7 +319,14 @@ class PlayTests(unittest.TestCase):
                     a.confirm_pos()
                     a.chat(f"/tp {name} -159.5 100 160.5")
                     a.confirm_pos()
-                    a.until(0x21, lambda b: struct.unpack_from(">ii", b) == (-10, 10) and b[9:11] != bytes(2))
+                    column = a.until(0x21, lambda b: struct.unpack_from(">ii", b) == (-10, 10) and b[9:11] != bytes(2))
+                    if restart:
+                        self.assertEqual(column, original_column)
+                        self.assertEqual(json.loads(marker.read_text()), identity)
+                    else:
+                        original_column = column
+                        identity = json.loads(marker.read_text())
+                        self.assertEqual(identity["seed"], int(Path(world_dir, "seed").read_text()))
                     if not restart:
                         a.chat("/setblock -160 99 160 57")
                     change = a.until(0x23, lambda b: number(b, 8)[0] == 57 << 4)

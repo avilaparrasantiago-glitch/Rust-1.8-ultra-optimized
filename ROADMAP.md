@@ -43,8 +43,8 @@ Verificado leyendo los 22 módulos de `src/` (5.947 líneas). Clasificación: CU
 
 | Aspecto | Estado | Evidencia |
 | Combate 1.8: attack, LOS, críticos, knockback k=0.4/0.8 sprint; daño caída/vacío, regen, hardness | CUBIERTO | engine.rs:809-854, 925-1019, 1106; grid visibilidad 1020-1091; invuln 10 ticks engine.rs:164-180 |
-| Inventario 45 slots, modos 0/1/2 + drag | CUBIERTO | inventory.rs, windows.rs (modos 0/1/2 + drag 5) |
-| Ventanas: mesa + furnace | CUBIERTO | windows.rs (207 líneas) — sin anvil/enchant/dispenser, sin number-key/double-click |
+| Inventario de jugador de 45 casillas | CUBIERTO | inventory.rs y engine/windows.rs gestionan clic, shift, barra rápida, arrastre y recogida por doble clic |
+| Ventanas de mesa y horno | PARCIAL | engine/windows.rs recoge de las casillas visibles. Siguen pendientes yunque, encantamiento, dispensador y los intercambios numéricos en casillas propias de la mesa o el horno. |
 | Crafting 9 recetas + furnace | CUBIERTO | crafting.rs:164-220 — sin enchant/anvil/brewing |
 | Redstone: dust, repeaters, doors, gates, pistons ≤12, levers; budget 512 updates/tick | PARCIAL | redstone.rs:36-130 — sin comparadores |
 | Comandos ~30 + tab completion, op por UUID | CUBIERTO (parcial vs ~40) | commands.rs:61-69, 526-559 |
@@ -110,7 +110,9 @@ Orden: núcleo de memoria/ECS y Protocolo 47 antes que comandos y orquestación.
 - [ ] **T4.1** Ventanas anvil y enchant (windows.rs:207 líneas) + validación anvil/enchant en crafting.rs.
 - [ ] **T4.2** Comparadores y hoppers en redstone.rs (modo compare/subtract, budget 512 ya existente).
 - [ ] **T4.3** Mobs sobre T1.1: AI por máquinas de estado, A* en grid, spawning por luz/bioma, despawn por distancia.
-- [ ] **T4.4** Interacción de inventario faltante: number-key y double-click collect en inventory.rs.
+- [x] **T4.4** Inventario del jugador. Verificado el intercambio existente con la barra rápida e implementada la recogida por doble clic en `src/inventory.rs`. En `src/engine/windows.rs` la recogida recorre las casillas de la ventana abierta y excluye el resultado virtual de la mesa.
+  - `tests/inventory.rs` reproduce el rechazo anterior del modo 6 y comprueba prioridad de pilas parciales, capacidad, metadatos y botones inválidos. `tests/protocol47.py` contrasta confirmaciones, casillas y cursor con vectores independientes por TCP.
+  - Windows, perfil dev. Check y Clippy sin advertencias, nextest 2/2 y TCP 4/4. Un contador de asignaciones alrededor de 10.000 pares de clics de modos 2 y 6, tras calentamiento, registró cero. En Windows la suite TCP usa una URL SQLite explícita porque la URL predeterminada con ruta absoluta falló al arrancar.
 - [ ] **T4.5** Villagers + trading + Nether/End (portales, dragon fight) — último de gameplay, depende de T1.1 y T2.1.
 
 ### Fase 5 — Comandos y permisos

@@ -134,8 +134,11 @@ def server(**overrides):
                       arena_file=str(arena), operators={str(uid): 4}, view_distance=1)
         config.update(overrides)
         path = tmp / "config.json"
-        path.write_text(json.dumps(config))
         env = dict(os.environ, CORAL_TEST_SECRET="regression-test-secret-of-at-least-32-bytes")
+        if os.name == "nt":
+            config["database_url_env"] = "CORAL_TEST_DB"
+            env["CORAL_TEST_DB"] = "sqlite://profiles.sqlite?mode=rwc"
+        path.write_text(json.dumps(config))
         with subprocess.Popen([BINARY, "--config", path], cwd=tmp, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE) as proc:
             try:
                 for _ in range(100):
@@ -195,6 +198,26 @@ class PlayTests(unittest.TestCase):
             a.until(0x13)
             with urllib.request.urlopen(f"http://127.0.0.1:{metrics}/metrics") as r:
                 self.assertIn("coral_players 2", r.read().decode())
+
+    def test_number_key_and_double_click(self):
+        with server() as (port, _):
+            a = self.client(port)
+            a.login("Alice")
+            a.confirm_pos()
+            a.chat("/give Alice 1 3")
+            self.assertEqual(a.until(0x2f), bytes.fromhex("00 0009 0001 03 0000 00"))
+            for click, ack, slots in [
+                ("00 0009 08 0001 02 ffff", "00 0001 01",
+                 ["00 0009 ffff", "00 002c 0001 03 0000 00", "ff ffff ffff"]),
+                ("00 002c 01 0002 00 0001 03 0000 00", "00 0002 01",
+                 ["00 002c 0001 01 0000 00", "ff ffff 0001 02 0000 00"]),
+                ("00 0009 00 0003 06 ffff", "00 0003 01",
+                 ["00 002c ffff", "ff ffff 0001 03 0000 00"]),
+            ]:
+                a.send(0x0e, bytes.fromhex(click))
+                self.assertEqual(a.until(0x32), bytes.fromhex(ack))
+                for slot in slots:
+                    self.assertEqual(a.until(0x2f), bytes.fromhex(slot))
 
     def test_queue_promotion(self):
         with server(max_players=1) as (port, _):

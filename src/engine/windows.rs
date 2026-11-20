@@ -66,7 +66,34 @@ impl Room {
                     return;
                 }
                 refresh = Some(pos);
-                if (offset..offset + 36).contains(&idx) {
+                if mode == 6 {
+                    if button != 0 || !(0..offset + 36).contains(&idx) {
+                        false
+                    } else {
+                        let (inputs, first): (&mut [Option<Stack>], i16) = match w {
+                            Window::Table(_) => (&mut player.table, 1),
+                            Window::Furnace(_) => {
+                                (&mut self.furnaces.entry(pos).or_default().slots, 0)
+                            }
+                        };
+                        let storage = &mut player.inv.slots[9..];
+                        let empty = if idx >= offset {
+                            storage[(idx - offset) as usize].is_none()
+                        } else if idx >= first {
+                            inputs[(idx - first) as usize].is_none()
+                        } else {
+                            crafting::craft(inputs, 3).is_none()
+                        };
+                        if empty {
+                            crate::inventory::Inventory::collect(
+                                &mut player.inv.cursor,
+                                inputs,
+                                storage,
+                            );
+                        }
+                        true
+                    }
+                } else if (offset..offset + 36).contains(&idx) {
                     let source = (9 + idx - offset) as usize;
                     if mode == 1 && button <= 1 {
                         match w {

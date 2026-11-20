@@ -64,6 +64,24 @@ pub(crate) fn transfer(src: &mut Option<Stack>, dst: &mut Option<Stack>, max: u8
     n
 }
 impl Inventory {
+    pub(crate) fn collect(
+        cursor: &mut Option<Stack>,
+        inputs: &mut [Option<Stack>],
+        storage: &mut [Option<Stack>],
+    ) {
+        let Some(item) = *cursor else { return };
+        let cap = limit(item.id);
+        for full in [false, true] {
+            for slot in inputs.iter_mut().chain(storage.iter_mut()) {
+                if cursor.is_some_and(|s| s.count >= cap) {
+                    return;
+                }
+                if slot.is_some_and(|s| (s.count == cap) == full) {
+                    transfer(slot, cursor, cap);
+                }
+            }
+        }
+    }
     pub fn add(&mut self, item: Stack) -> bool {
         let mut copy = self.slots;
         let mut source = Some(item);
@@ -85,6 +103,16 @@ impl Inventory {
             return self.drag(idx, button);
         }
         self.drag = None;
+        if mode == 6 {
+            if button != 0 || !(0..45).contains(&idx) {
+                return false;
+            }
+            if self.slots[idx as usize].is_none() {
+                let (equipment, storage) = self.slots.split_at_mut(9);
+                Self::collect(&mut self.cursor, &mut equipment[1..], storage);
+            }
+            return true;
+        }
         if idx == 0 {
             if !matches!(mode, 0 | 1) || button > 1 {
                 return false;

@@ -444,7 +444,7 @@ impl Room {
                 i += 1;
             }
             self.entities.tick();
-            drops::collect_items(&mut self.entities, &mut self.players);
+            drops::collect_drops(&mut self.entities, &mut self.players);
             self.circuit
                 .step(&mut self.world, self.tick, &mut self.changed);
             for &(pos, state) in &self.changed {
@@ -521,6 +521,9 @@ impl Room {
         player.center = None;
         player.spawn = spawn;
         player.send(p::spawn_point(spawn));
+        if player.xp > 0 {
+            player.send_xp();
+        }
         player.send(p::abilities(player.mode, player.flying));
         player.send(p::health(player.hp, 20, 5.));
         player.send(p::game_state(if self.weather { 1 } else { 2 }, 0.));
@@ -1006,6 +1009,7 @@ impl Room {
             let dead = b.hp == 0.;
             self.players[i].sprint = false;
             if dead {
+                drops::drop_xp(&mut self.entities, &mut self.players[j]);
                 self.players[i].kills += 1;
                 self.notify_script(i, "kill", 0);
                 self.notify_script(j, "death", 0);

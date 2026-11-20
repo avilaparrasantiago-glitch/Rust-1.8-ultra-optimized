@@ -131,14 +131,15 @@ impl EntityArena {
         self.dense.iter().map(|(id, entity)| (*id, entity))
     }
 
-    pub(crate) fn retain(&mut self, mut keep: impl FnMut(EntityId, &Entity) -> bool) {
+    pub(crate) fn retain(&mut self, mut keep: impl FnMut(EntityId, &mut Entity) -> bool) {
         let mut index = 0;
         while index < self.dense.len() {
-            let (id, entity) = &self.dense[index];
-            if keep(*id, entity) {
+            let (id, entity) = &mut self.dense[index];
+            let id = *id;
+            if keep(id, entity) {
                 index += 1;
             } else {
-                self.remove(*id);
+                self.remove(id);
             }
         }
     }

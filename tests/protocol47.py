@@ -216,6 +216,35 @@ class PlayTests(unittest.TestCase):
             self.assertEqual(a.until(0x2f), struct.pack(">bhhBhB", 0, 9, 3, 1, 0, 0))
             self.assertEqual(a.until(0x13), var(1) + var(eid))
 
+    def test_pvp_orb_moves_and_grants_xp_once(self):
+        with server() as (port, _):
+            a = self.client(port)
+            a.login("Alice")
+            a.confirm_pos()
+            b = self.client(port)
+            b.login("Bob")
+            b.confirm_pos()
+            victim, _ = number(a.until(0x0c))
+            a.chat("/xp 7 Bob")
+            self.assertEqual(b.until(0x1f), bytes.fromhex("000000000107"))
+            a.chat("/tp Bob 3.5 4 0.5")
+            b.confirm_pos()
+            a.chat("/gamemode creative Alice")
+            a.until(0x2b)
+            a.send(0x10, struct.pack(">hhBhB", 36, 276, 1, 0, 0))
+            for _ in range(3):
+                a.send(2, var(victim) + var(1))
+                time.sleep(.6)
+            spawn = a.until(0x11)
+            orb, pos = number(spawn)
+            self.assertEqual(struct.unpack(">h", spawn[-2:])[0], 7)
+            move = a.until(0x18, lambda body: number(body)[0] == orb)
+            self.assertLess(struct.unpack_from(">i", move, len(var(orb)))[0],
+                            struct.unpack_from(">i", spawn, pos)[0])
+            self.assertEqual(a.until(0x1f), bytes.fromhex("000000000107"))
+            self.assertEqual(a.until(0x13), var(1) + var(orb))
+            self.assertEqual(b.until(0x1f), bytes.fromhex("000000000000"))
+
     def test_queue_promotion(self):
         with server(max_players=1) as (port, _):
             a = self.client(port)

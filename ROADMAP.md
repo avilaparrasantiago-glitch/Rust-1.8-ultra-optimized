@@ -53,7 +53,7 @@ Estado contrastado con los puntos de entrada del código. Las referencias descri
 | Redstone | PARCIAL | redstone.rs, `Circuit::step` y `output`, cubren polvo, repetidores, puertas, trampillas, pistones y fuentes de señal básicas con un presupuesto de 512 actualizaciones por tick. Quedan comparadores, tolvas, dispensadores, soltadores y encendido de TNT. |
 | Comandos y autocompletado | PARCIAL | commands.rs, `REGISTRY`, `execute` y `complete`. Ver T5.2 y T5.3. |
 | Selectores @a/@e/@p/@r con filtros | PARCIAL | selector.rs, `Selector::resolve`, filtra jugadores, reúne resultados en un Vec y los ordena. Faltan las entidades no jugador y la resolución sin asignaciones. |
-| Entidades no jugador (ítems, orbes de XP, flechas, mobs) | PARCIAL | entities.rs aporta almacenamiento y actualización de posición y edad. engine.rs integra la arena en cada mundo. La difusión ya usa las columnas cargadas y un radio de 80 bloques. Los bloques sueltan objetos que se recogen por proximidad. Quedan los orbes de XP y los mobs (T1.4, T4.3). |
+| Entidades no jugador (ítems, orbes de XP, flechas, mobs) | PARCIAL | entities.rs aporta almacenamiento y actualización de posición y edad. engine.rs integra la arena en cada mundo. La difusión ya usa las columnas cargadas y un radio de 80 bloques. Los bloques sueltan objetos que se recogen por proximidad. Las bajas PvP producen orbes de experiencia. Los mobs quedan para T4.3. |
 | Permisos 0–4 granulares | PARCIAL | commands.rs, `allowed`, consulta niveles por UUID y nodos `coral.command.*` declarados en config.rs. Falta integración con profiles.rs. |
 
 ### 5. Scripting — PARCIAL
@@ -75,13 +75,15 @@ Estado contrastado con los puntos de entrada del código. Las referencias descri
 | Forwarding HMAC Coral47/1 + replay nonce | CUBIERTO | identity.rs:40-99 |
 | NATS chat bus + Redis heartbeat | CUBIERTO | mesh.rs:25, 49-51 |
 
-Extras verificados en el código: linux/coral_xdp.c limita SYN IPv4/IPv6 en el puerto 25565. Quedan el despliegue y las pruebas de línea (T6.3). tests/protocol47.py contiene cuatro pruebas TCP. benches/transport.rs define el benchmark de Criterion.
+Extras verificados en el código: linux/coral_xdp.c limita SYN IPv4/IPv6 en el puerto 25565. Quedan el despliegue y las pruebas de línea (T6.3). tests/protocol47.py contiene cinco pruebas TCP. benches/transport.rs define el benchmark de Criterion.
 
 Higiene: repositorio Git activo. `git check-ignore` confirmó las exclusiones de target/, data/ y *.log. Cargo.lock incluye Criterion y sus dependencias para que las comprobaciones con `--locked` puedan resolver los benchmarks declarados en Cargo.toml.
 
 ---
 
 ## Tareas atómicas por dependencias
+
+El desarrollo continúa en este repositorio. Los subsistemas nuevos tendrán diseño e implementación propios, conservando la compatibilidad con clientes Minecraft Java 1.8.8 y 1.8.9.
 
 Orden: núcleo de memoria/ECS y Protocolo 47 antes que comandos y orquestación. Cada tarea = un bloque AGENTS.md (TDD, check+clippy+nextest, commit).
 
@@ -95,13 +97,17 @@ Orden: núcleo de memoria/ECS y Protocolo 47 antes que comandos y orquestación.
 - [x] **T1.1** Arena generacional de entidades no jugador. `src/entities.rs` usa un Vec denso, reutiliza slots sin reutilizar identificadores obsoletos y comparte el cálculo de columnas con la visibilidad de jugadores. `Room::run` actualiza una arena de 1.024 plazas reservadas antes del tick. `tests/entities.rs` verificó la reutilización, el movimiento entre columnas y cero asignaciones en 1.024 ciclos de inserción, tick y borrado tras el calentamiento.
 - [x] **T1.2** Broadcast de spawn/move/destroy de entidades vía el zero-copy `Packet(Arc<Shared>)` (wire.rs:199-233) respetando el grid de visibilidad.
 - [x] **T1.3** Drops de items al romper bloque + pickup por AABB (reutilizar física de engine.rs:925-973).
-- [ ] **T1.4** Orbes de XP (spawn al matar, imán, recoger) sobre la misma arena.
+- [x] **T1.4** Orbes de XP (spawn al matar, imán, recoger) sobre la misma arena.
 
 ### Fase 2 — Protocolo 47: chunks y culling
 
 - [ ] **T2.1** Optimizar la expansión de las paletas internas de `Section` al serializar columnas. Conservar el formato u16 little-endian de Protocolo 47 y verificar los bytes con un vector independiente. Medir la primera serialización y la lectura desde caché.
 - [ ] **T2.2** MapChunkBulk: agrupar columnas contiguas en un solo paquete 0x26 con continuación bitmask.
 - [ ] **T2.3** Culling de entidades: frustum + occlusion por ray-marching de voxeles para suprimir packets de entidad fuera de vista; throttle adaptativo 20 Hz <16 bloques / 5–10 Hz >48 (usando el grid engine.rs:1020-1091).
+
+- [ ] **T2.4a** Generador propio de Overworld normal al estilo de Java 1.8. Obtener relieve, costas, océanos, ríos y biomas a partir de la semilla guardada. Comprobar continuidad de chunks, incluidas coordenadas negativas, y reproducibilidad con distinto orden de carga.
+- [ ] **T2.4b** Poblar el terreno con cuevas, minerales, vegetación y estructuras según el bioma. Verificar las formaciones que cruzan chunks y un punto de aparición transitable.
+- [ ] **T2.4c** Integrar la generación bajo demanda con carga, caché y persistencia de ediciones. Medir tiempo por chunk en frío y desde caché, memoria y p99 de tick durante la exploración con varios jugadores.
 
 ### Fase 3 — Runtime thread-per-core
 
@@ -134,10 +140,12 @@ Orden: núcleo de memoria/ECS y Protocolo 47 antes que comandos y orquestación.
 
 ## Siguiente bloque
 
-**T1.4** — Generar orbes de XP al matar, atraerlos hacia el jugador y recogerlos.
+**T2.1** — Optimizar la serialización de columnas y comparar los bytes con vectores independientes de Protocolo 47.
 
 La prueba de engine/entity_visibility.rs cubre paquetes compartidos, columnas descargadas y reutilización de slots. Los vectores de aparición siguen el esquema 1.8 de PrismarineJS. La generación de entidades durante el juego corresponde a los bloques siguientes.
 
 T1.3 se verificó con rotura de hierba, aparición de tierra, recogida por AABB e inventario sincronizado sobre TCP. src/engine/drops.rs prueba la recogida por otro jugador cuando el primer inventario está lleno. La espera inicial de recogida es de diez ticks.
 
-Última verificación de T1.3 en Windows GNU con Rust 1.100.0 y Nextest 0.9.150. Pasaron `cargo check --workspace --locked`, `cargo clippy --workspace -- -D warnings`, `cargo nextest run --workspace --locked` (6 pruebas) y `tests/protocol47.py` (4 pruebas TCP).
+T1.4 se verificó con dos clientes TCP: baja PvP, aparición y movimiento del orbe, recogida, actualización de XP y retirada de la entidad. El orbe transfiere siete puntos por nivel de la víctima hasta un máximo de cien. La víctima conserva el resto.
+
+Última verificación de T1.4 en Windows GNU con Rust 1.100.0 y Nextest 0.9.150. Pasaron `cargo check --workspace --locked`, `cargo clippy --workspace -- -D warnings`, `cargo nextest run --workspace --locked` (6 pruebas) y `tests/protocol47.py` (5 pruebas TCP).

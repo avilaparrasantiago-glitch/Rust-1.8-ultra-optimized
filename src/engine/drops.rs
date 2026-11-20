@@ -40,8 +40,60 @@ impl Room {
         self.broadcast(p::effect(2001, pos, i32::from(state)));
     }
 }
-pub(super) fn collect_items(entities: &mut EntityArena, players: &mut [Player]) {
+pub(super) fn drop_xp(entities: &mut EntityArena, victim: &mut Player) {
+    let value = (victim.level() * 7).clamp(0, 100) as u16;
+    if value == 0 {
+        return;
+    }
+    let orb = Entity {
+        kind: EntityKind::Orb { value },
+        position: victim.pos,
+        velocity: [0.; 3],
+        age: 0,
+    };
+    if entities.insert(orb).is_ok() {
+        victim.add_xp(-i32::from(value));
+    }
+}
+
+fn attract_orb(e: &mut Entity, value: u16, players: &mut [Player]) -> bool {
+    let col = e.column();
+    let nearest = players
+        .iter_mut()
+        .filter(|p| {
+            p.hp > 0.
+                && p.mode != 3
+                && p.loaded.contains(&col)
+                && p.xp.checked_add(i32::from(value)).is_some()
+        })
+        .map(|p| {
+            let target = [p.pos[0], p.pos[1] + 0.8, p.pos[2]];
+            let squared = super::distance(target, e.position);
+            (p, target, squared)
+        })
+        .filter(|(_, _, squared)| *squared <= 64.)
+        .min_by(|a, b| a.2.total_cmp(&b.2));
+    let Some((player, target, squared)) = nearest else {
+        return true;
+    };
+    if e.age >= 10 && within_pickup_box(player.pos, e.position) {
+        player.add_xp(i32::from(value));
+        return false;
+    }
+    if squared > 0. {
+        let fraction = (0.25 / squared.sqrt()).min(1.);
+        for (coordinate, goal) in e.position.iter_mut().zip(target) {
+            *coordinate += (goal - *coordinate) * fraction;
+        }
+    }
+    true
+}
+
+pub(super) fn collect_drops(entities: &mut EntityArena, players: &mut [Player]) {
     entities.retain(|handle, e| {
+        if let EntityKind::Orb { value } = e.kind {
+            return attract_orb(e, value, players);
+        }
         let EntityKind::Item(stack) = e.kind else {
             return true;
         };
@@ -134,10 +186,10 @@ mod tests {
         }
         players[0].inv.slots[9..].fill(Some(Stack { count: 64, ..stack }));
         players[1].pos = [2., 0., 0.];
-        collect_items(&mut arena, &mut players);
+        collect_drops(&mut arena, &mut players);
         assert!(arena.get(handle).is_some());
         players[1].pos = [1., 0., 0.];
-        collect_items(&mut arena, &mut players);
+        collect_drops(&mut arena, &mut players);
         assert!(arena.get(handle).is_none());
         assert_eq!(players[1].inv.slots[9], Some(stack));
         assert!(outputs[0].try_recv().is_err());

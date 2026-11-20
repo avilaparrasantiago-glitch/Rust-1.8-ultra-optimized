@@ -130,6 +130,22 @@ fn state(args: &[&str]) -> io::Result<u16> {
     Ok((id * 16 + meta) as u16)
 }
 impl Player {
+    pub(crate) fn add_xp(&mut self, points: i32) {
+        self.xp = self.xp.saturating_add(points).max(0);
+        self.send_xp();
+    }
+
+    pub(crate) fn send_xp(&self) {
+        let level = self.level();
+        let progress = ((self.xp as f64 - xp_for_level(level))
+            / (xp_for_level(level + 1) - xp_for_level(level))) as f32;
+        self.send(crate::wire::Packet::new(0x1f, |w| {
+            w.put_f32(progress);
+            w.var(level);
+            w.var(self.xp);
+        }));
+    }
+
     pub fn level(&self) -> i32 {
         let xp = self.xp as f64;
         if xp < 352. {
@@ -304,17 +320,7 @@ fn run(room: &mut Room, i: usize, line: &str) -> io::Result<Option<String>> {
         "xp" => {
             let n = integer(a.first())?;
             for j in targets(room, i, a.get(1).copied())? {
-                let p = &mut room.players[j];
-                p.xp = p.xp.saturating_add(n).max(0);
-                let level = p.level();
-                let progress = ((p.xp as f64 - xp_for_level(level))
-                    / (xp_for_level(level + 1) - xp_for_level(level)))
-                    as f32;
-                p.send(crate::wire::Packet::new(0x1f, |w| {
-                    w.put_f32(progress);
-                    w.var(level);
-                    w.var(p.xp);
-                }));
+                room.players[j].add_xp(n);
             }
         }
         "give" => {

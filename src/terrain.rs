@@ -3,8 +3,26 @@ use rayon::prelude::*;
 use std::{collections::BTreeMap, sync::OnceLock};
 
 const SEA: u8 = 62;
-// Indices fit in three bits, including air. Entries are protocol 47 block states.
-const STATES: [u16; 8] = [0, 1 << 4, 3 << 4, 2 << 4, 12 << 4, 9 << 4, 7 << 4, 24 << 4];
+mod population;
+// One nibble per block during section packing; entries are protocol 47 states.
+const STATES: [u16; 16] = [
+    0,
+    1 << 4,
+    3 << 4,
+    2 << 4,
+    12 << 4,
+    9 << 4,
+    7 << 4,
+    24 << 4,
+    16 << 4,
+    15 << 4,
+    14 << 4,
+    56 << 4,
+    17 << 4,
+    18 << 4,
+    81 << 4,
+    4 << 4,
+];
 
 #[derive(Clone, Copy)]
 struct Surface {
@@ -15,14 +33,18 @@ struct Surface {
 struct Generator(u64);
 
 impl Generator {
-    fn corner(&self, x: i64, z: i64, layer: u64) -> f64 {
+    fn hash(&self, x: i64, z: i64, layer: u64) -> u64 {
         let mut v = self.0
             ^ layer.wrapping_mul(0x632be59bd9b4e019)
             ^ (x as u64).wrapping_mul(0x9e3779b97f4a7c15)
             ^ (z as u64).wrapping_mul(0xd6e8feb86659fd93);
         v = (v ^ (v >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
         v = (v ^ (v >> 27)).wrapping_mul(0x94d049bb133111eb);
-        ((v ^ (v >> 31)) >> 11) as f64 / ((1u64 << 52) as f64) - 1.
+        v ^ (v >> 31)
+    }
+
+    fn corner(&self, x: i64, z: i64, layer: u64) -> f64 {
+        (self.hash(x, z, layer) >> 11) as f64 / ((1u64 << 52) as f64) - 1.
     }
 
     fn noise(&self, x: i64, z: i64, scale: i64, layer: u64) -> f64 {
@@ -82,62 +104,70 @@ impl Generator {
                 i64::from(cz) * 16 + (i / 16) as i64,
             )
         });
-        let lowest = surface.iter().map(|s| s.height).min().unwrap();
         let highest = surface.iter().fold(SEA, |h, s| h.max(s.height));
-        let mut sections = BTreeMap::new();
-        for sy in 0..=highest / 16 {
-            if sy > 0 && sy * 16 + 15 < lowest.saturating_sub(5) {
-                sections.insert(
-                    sy,
-                    Section {
-                        palette: vec![STATES[1]],
-                        indices: Vec::new(),
-                        light: Some(Box::new([[0; 2048]; 2])),
-                    },
-                );
-                continue;
-            }
-            let mut blocks = [0u8; 4096];
-            let mut light = Box::new([[0u8; 2048]; 2]);
-            for (i, code) in blocks.iter_mut().enumerate() {
-                let s = surface[i % 256];
-                let y = sy * 16 + (i / 256) as u8;
-                let sandy = matches!(s.biome, 0 | 2 | 7 | 16);
-                *code = if y == 0 {
+        // Reserve headroom for features anchored just outside this chunk.
+        let mut layers = vec![[0u8; 256]; usize::from(highest + 9).next_multiple_of(16)];
+        for (i, s) in surface.iter().enumerate() {
+            let sandy = matches!(s.biome, 0 | 2 | 7 | 16);
+            let x = i64::from(cx) * 16 + (i % 16) as i64;
+            let z = i64::from(cz) * 16 + (i / 16) as i64;
+            let caves = self.cave_span(x, z);
+            for (y, layer) in layers
+                .iter_mut()
+                .enumerate()
+                .take(usize::from(s.height.max(SEA)) + 1)
+            {
+                let y = y as u8;
+                layer[i] = if y == 0 {
                     6
                 } else if y > s.height {
-                    if y <= SEA { 5 } else { 0 }
+                    5
                 } else if y == s.height {
                     if sandy { 4 } else { 3 }
                 } else if s.height - y <= 3 {
                     if sandy { 4 } else { 2 }
                 } else if sandy && s.height - y <= 5 {
                     7
+                } else if caves.contains(&y) {
+                    0
                 } else {
                     1
                 };
-                let sky = if y > s.height {
-                    15u8.saturating_sub(SEA.saturating_add(1).saturating_sub(y).saturating_mul(3))
-                } else {
-                    0
-                };
-                light[1][i / 2] |= sky << ((i % 2) * 4);
+            }
+        }
+        self.populate(cx, cz, &surface, &mut layers);
+        let mut sections = BTreeMap::new();
+        let mut sky = [15u8; 256];
+        for (sy, slice) in layers.as_chunks::<16>().0.iter().enumerate().rev() {
+            let blocks = slice.as_slice().as_flattened();
+            if blocks.iter().all(|&v| v == 0) && sections.is_empty() {
+                continue;
+            }
+            let mut light = Box::new([[0u8; 2048]; 2]);
+            for (y, row) in slice.iter().enumerate().rev() {
+                for (i, &code) in row.iter().enumerate() {
+                    sky[i] = match code {
+                        0 => sky[i],
+                        5 => sky[i].saturating_sub(3),
+                        13 => sky[i].saturating_sub(1),
+                        _ => 0,
+                    };
+                    light[1][y * 128 + i / 2] |= sky[i] << (4 * (i % 2));
+                }
             }
             let (palette, indices) = if blocks.iter().all(|&b| b == blocks[0]) {
                 (vec![STATES[blocks[0] as usize]], Vec::new())
             } else {
-                let mut packed = Vec::with_capacity(1536);
-                for group in blocks.as_chunks::<8>().0 {
-                    let word = group
-                        .iter()
-                        .enumerate()
-                        .fold(0u32, |v, (j, b)| v | (u32::from(*b) << (3 * j)));
-                    packed.extend_from_slice(&word.to_le_bytes()[..3]);
-                }
+                let packed = blocks
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|&[a, b]| a | b << 4)
+                    .collect();
                 (STATES.to_vec(), packed)
             };
             sections.insert(
-                sy,
+                sy as u8,
                 Section {
                     palette,
                     indices,
@@ -191,6 +221,29 @@ mod tests {
                     assert!(s.height.abs_diff(g.surface(wx - 1, wz).height) <= 5);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn underground_population_and_dry_spawn() {
+        let world = Template::normal(9581, 1);
+        let mut cave = false;
+        let mut ore = false;
+        for x in -16..16 {
+            for z in -16..16 {
+                for y in 3..32 {
+                    let id = world.block((x, y, z)) >> 4;
+                    cave |= id == 0;
+                    ore |= matches!(id, 14 | 15 | 16 | 56);
+                }
+            }
+        }
+        assert!(cave && ore);
+        let [_, y, _] = world.spawn().unwrap();
+        let height = Generator(9581).surface(0, 0).height;
+        assert_eq!(y, f64::from(height + 1));
+        for level in [height + 1, height + 2] {
+            assert_eq!(world.block((0, level, 0)), 0);
         }
     }
 

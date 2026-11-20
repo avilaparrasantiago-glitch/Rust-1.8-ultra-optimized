@@ -59,4 +59,4 @@ cargo build --release
 
 ## Normal Overworld terrain
 
-New configurations use the built-in seeded terrain generator. To select it in an existing JSON configuration, set `"terrain": "normal"` and omit `arena_file`. Existing configurations that omit `terrain` retain the flat template. An explicit arena file takes priority. The generator reads the seed from `data_dir/seed` and builds a square around spawn with a radius of `view_distance + 1` chunks at startup. Caves, vegetation, structures and generation during exploration are subsequent roadmap blocks.
+New configurations use the built-in seeded terrain generator. To select it in an existing JSON configuration, set `"terrain": "normal"` and omit `arena_file`. Existing configurations that omit `terrain` retain the flat template. An explicit arena file takes priority. The generator reads the seed from `data_dir/seed` and builds a square around spawn with a radius of `view_distance + 1` chunks at startup. The initial area includes underground tunnels, coal, iron, gold and diamond veins, oaks, desert cacti, and occasional stone or sandstone ruins. Generating more terrain as players explore is tracked in T2.4c.

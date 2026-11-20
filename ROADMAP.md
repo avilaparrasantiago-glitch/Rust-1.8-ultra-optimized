@@ -40,6 +40,7 @@ Estado contrastado con los puntos de entrada del código. Las referencias descri
 | Serialización de columnas | PARCIAL | arena.rs, `Column::packet`, expande las paletas a u16 little-endian del Protocolo 47. wire.rs, `Packet::encoded`, aplica compresión a nivel de frame. |
 | Anvil .mca import/export | PARCIAL | anvil.rs, `import` y `export`, implementan lectura y escritura. memmap2 usa un snapshot anónimo y persistence.rs delega la exportación al worker; la importación se ejecuta al abrir el mundo. |
 | Manager multi-mundo con carriles, transfer Respawn, cola priorizada/cancelable (2 cols/tick, unload) | CUBIERTO | engine.rs:203-348, 415-431, 693-738 |
+| Generación propia de Overworld | PARCIAL | src/terrain.rs y src/terrain/population.rs generan y pueblan la zona inicial por semilla. La exploración más allá de esa zona depende de T2.4c. |
 | Overlay de ediciones `Arc<Edits>` | CUBIERTO | arena.rs:283-307 |
 
 ### 4. Gameplay — PARCIAL
@@ -106,7 +107,7 @@ Orden: núcleo de memoria/ECS y Protocolo 47 antes que comandos y orquestación.
 - [x] **T2.3** Culling de entidades: frustum + occlusion por ray-marching de voxeles para suprimir packets de entidad fuera de vista; throttle adaptativo 20 Hz <16 bloques / 5–10 Hz >48 (usando el grid engine.rs:1020-1091).
 
 - [x] **T2.4a** Generador propio de Overworld normal al estilo de Java 1.8. Obtener relieve, costas, océanos, ríos y biomas a partir de la semilla guardada. Comprobar continuidad de chunks, incluidas coordenadas negativas, y reproducibilidad con distinto orden de carga.
-- [ ] **T2.4b** Poblar el terreno con cuevas, minerales, vegetación y estructuras según el bioma. Verificar las formaciones que cruzan chunks y un punto de aparición transitable.
+- [x] **T2.4b** Poblar el terreno con cuevas, minerales, vegetación y estructuras según el bioma. Verificar las formaciones que cruzan chunks y un punto de aparición transitable.
 - [ ] **T2.4c** Integrar la generación bajo demanda con carga, caché y persistencia de ediciones. Medir tiempo por chunk en frío y desde caché, memoria y p99 de tick durante la exploración con varios jugadores.
 
 **Criterios de aceptación de T2.4.** Usar la semilla persistente y comprobar con clientes Java 1.8.8/1.8.9 que el terreno normal se puede explorar, editar y volver a cargar. Generar columnas fuera del hilo de simulación, priorizar las que necesita el jugador y cancelar solicitudes obsoletas al teletransportarse o salir. Acotar las colas y la caché para que explorar terreno nuevo tenga un coste de memoria controlado.
@@ -144,7 +145,7 @@ Contrastar los resultados con [ARCHITECTURE.md](ARCHITECTURE.md). Durante explor
 
 ## Siguiente bloque
 
-**T2.4b** — Añadir cuevas, minerales, vegetación y estructuras según el bioma, comprobar sus cruces entre chunks y mantener el punto de aparición transitable.
+**T2.4c** — Generar chunks durante la exploración, priorizar y cancelar solicitudes, acotar la caché, conservar ediciones y medir el p99 de tick con varios jugadores.
 
 La prueba de engine/entity_visibility.rs cubre paquetes compartidos, columnas descargadas y reutilización de slots. Los vectores de aparición siguen el esquema 1.8 de PrismarineJS. La generación de entidades durante el juego corresponde a los bloques siguientes.
 
@@ -165,3 +166,7 @@ T2.3 — engine/entity_visibility.rs aplica una vista conservadora de 160 × 130
 T2.4a — src/terrain.rs genera el relieve de siete biomas a partir de coordenadas globales y de la semilla persistente. src/main.rs construye la zona inicial en paralelo antes de arrancar la simulación. Las pruebas comparan los paquetes al invertir el orden de generación, recorren bordes en ambos ejes con coordenadas negativas y comprueban el bloque bajo el jugador con un cliente TCP de protocolo 47. Pasaron cargo check, Clippy, 13 pruebas Rust y 7 pruebas TCP.
 
 Criterion midió 520,96 µs por lote de nueve chunks nuevos en memoria (IC 95 % de 479,78 a 582,22 µs). Semilla 9581, radio 1, dos hilos Rayon, Intel Core i3-1005G1, Windows GNU, Rust 1.100.0, perfil dev con símbolos y opt-level 3 para el paquete principal. Una vez terminadas las pruebas, se usó 1 s de calentamiento y 3 s de medición con 30 muestras. Se capturó además un perfil de CPU a 99 Hz durante 3 s. La carga bajo demanda, la caché y el p99 de tick durante exploración corresponden a T2.4c.
+
+T2.4b — El generador propio añade túneles subterráneos, vetas de carbón, hierro, oro y diamante, robles, cactus y ruinas abiertas de roca o arenisca. Los anclajes dependen de la semilla y de coordenadas globales. Cada chunk reproduce los anclajes vecinos que le afectan y conserva libre de obstáculos la zona inmediata de aparición. Se comprobaron una copa, una veta y un tejado a ambos lados de un borde negativo, el suelo y espacio libre del spawn y la reproducibilidad al invertir el orden de generación. Pasaron cargo check, Clippy, 15 pruebas Rust y 7 pruebas TCP de protocolo 47.
+
+Criterion para nueve chunks recién generados y poblados en memoria: 978,46 µs (IC 95 % de 916,78 µs a 1,0875 ms), frente a los 520,96 µs registrados para el relieve de T2.4a. Semilla 9581, radio 1, dos hilos Rayon, Intel Core i3-1005G1, Windows GNU, Rust 1.100.0, perfil dev con símbolos y opt-level 3 en el paquete principal, 1 s de calentamiento, 3 s de medición y 30 muestras después de las pruebas TCP. Perfil de CPU separado a 99 Hz durante 3 s. La medición corresponde a la generación inicial. T2.4c medirá el efecto sobre los ticks durante la exploración.

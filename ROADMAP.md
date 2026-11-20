@@ -73,7 +73,7 @@ Verificado leyendo los 22 módulos de `src/` (5.947 líneas). Clasificación: CU
 
 Extras verificados: coral_xdp.c (token bucket SYN v4+v6, LRU per-CPU 16384, ~40 SYN/s @ dport 25565), tools/rust_mcp.py, setup-linux.sh, tests/protocol47.py (3 pruebas: transfer 82, promoción de cola 120, forwarding firmado 133), benches/transport.rs (criterion).
 
-Higiene: **no hay `.git`** en el árbol; cero marcadores TODO/unimplemented! en src/.
+Higiene: repositorio Git local inicializado. La instantánea original de 36 archivos está en `main` (commit `02d8688`).
 
 ---
 
@@ -83,7 +83,9 @@ Orden: núcleo de memoria/ECS y Protocolo 47 antes que comandos y orquestación.
 
 ### Fase 0 — Higiene (prerrequisito de todo commit)
 
-- [ ] **T0.1** `git init` + `.gitignore` (target/, *.log, directorios locales). Sin esto, AGENTS.md pide commits por bloque que no se pueden hacer.
+- [x] **T0.1** Repositorio local y reglas de exclusión. La rama `feat/higiene` parte de `02d8688`. `.gitignore` conserva las reglas de `/target/` y `/data/` y añade `*.log` y `__pycache__/`.
+  - `tests/repository.rs` enumera los archivos que Git incluiría en un repositorio temporal. Con las reglas originales aparecían dos logs y una caché de Python. Con las reglas nuevas solo aparecen los archivos de proyecto previstos.
+  - Cargo incorporó a `Cargo.lock` los 24 paquetes que faltaban para resolver Criterion 0.5.1, ya declarado en el manifiesto. En Windows, `cargo check --workspace` y `cargo clippy --workspace -- -D warnings` terminaron sin advertencias. `cargo nextest run --workspace --locked` pasó la prueba de exclusiones (1/1).
 
 ### Fase 1 — Núcleo de memoria/ECS
 
@@ -129,6 +131,4 @@ Orden: núcleo de memoria/ECS y Protocolo 47 antes que comandos y orquestación.
 
 ## Siguiente bloque
 
-**T0.1** — `git init` + `.gitignore`. Prerrequisito: sin repo no hay commits por bloque (AGENTS.md). Toca solo el directorio raíz; cero código Rust.
-
-> Nota: T0.1 requiere decisión del operador (crear repo en un árbol que hoy no lo tiene). Alternativa si se prefiere no inicializar git: registrar los bloques cerrados como entradas con evidencia en este documento y marcar T0.1 como descartada.
+**T1.1** — Crear la arena generacional de entidades no jugador en `src/entities.rs` e integrarla en `Room::run` (`src/engine.rs:375`). Comprobar que un identificador caducado no accede a un slot reutilizado y medir las asignaciones del tick de entidades tras el calentamiento. La difusión de spawn, movimiento y destrucción corresponde a T1.2.

@@ -1,3 +1,4 @@
+mod entity_visibility;
 mod windows;
 use crate::{
     arena::{BlockPos, ColumnPos, Template, World, column},
@@ -65,6 +66,7 @@ pub struct Player {
     pending_cols: Vec<ColumnPos>,
     center: Option<ColumnPos>,
     seen: HashMap<i32, u64>,
+    seen_entities: entity_visibility::Seen,
     revision: u64,
     moved_tick: f64,
     previous: [f64; 3],
@@ -110,6 +112,7 @@ impl Player {
             pending_cols: Vec::new(),
             center: None,
             seen: HashMap::new(),
+            seen_entities: entity_visibility::empty_seen(),
             revision: 1,
             moved_tick: 0.,
             previous: [0.; 3],
@@ -512,6 +515,7 @@ impl Room {
         player.loaded.clear();
         player.pending_cols.clear();
         player.seen.clear();
+        player.seen_entities.clear();
         player.center = None;
         player.spawn = spawn;
         player.send(p::spawn_point(spawn));
@@ -778,6 +782,7 @@ impl Room {
                     a.send(p::health(20., 20, 5.));
                     a.loaded.clear();
                     a.seen.clear();
+                    a.seen_entities.clear();
                     a.teleport(a.spawn);
                 }
             }
@@ -1027,6 +1032,7 @@ impl Room {
         for (i, p) in self.players.iter().enumerate() {
             self.grid.entry(column(p.pos)).or_default().push(i);
         }
+        entity_visibility::broadcast(&self.entities, &self.grid, &mut self.players);
         for i in 0..self.players.len() {
             let viewer = &self.players[i];
             let c = column(viewer.pos);

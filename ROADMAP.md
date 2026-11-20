@@ -53,7 +53,7 @@ Estado contrastado con los puntos de entrada del código. Las referencias descri
 | Redstone | PARCIAL | redstone.rs, `Circuit::step` y `output`, cubren polvo, repetidores, puertas, trampillas, pistones y fuentes de señal básicas con un presupuesto de 512 actualizaciones por tick. Quedan comparadores, tolvas, dispensadores, soltadores y encendido de TNT. |
 | Comandos y autocompletado | PARCIAL | commands.rs, `REGISTRY`, `execute` y `complete`. Ver T5.2 y T5.3. |
 | Selectores @a/@e/@p/@r con filtros | PARCIAL | selector.rs, `Selector::resolve`, filtra jugadores, reúne resultados en un Vec y los ordena. Faltan las entidades no jugador y la resolución sin asignaciones. |
-| Entidades no jugador (ítems, orbes de XP, flechas, mobs) | PARCIAL | entities.rs aporta almacenamiento y actualización de posición y edad. engine.rs integra la arena en cada mundo. Quedan difusión, generación e interacciones (T1.2–T1.4, T4.3). |
+| Entidades no jugador (ítems, orbes de XP, flechas, mobs) | PARCIAL | entities.rs aporta almacenamiento y actualización de posición y edad. engine.rs integra la arena en cada mundo. La difusión ya usa las columnas cargadas y un radio de 80 bloques. Quedan generación e interacciones (T1.3–T1.4, T4.3). |
 | Permisos 0–4 granulares | PARCIAL | commands.rs, `allowed`, consulta niveles por UUID y nodos `coral.command.*` declarados en config.rs. Falta integración con profiles.rs. |
 
 ### 5. Scripting — PARCIAL
@@ -93,7 +93,7 @@ Orden: núcleo de memoria/ECS y Protocolo 47 antes que comandos y orquestación.
 ### Fase 1 — Núcleo de memoria/ECS
 
 - [x] **T1.1** Arena generacional de entidades no jugador. `src/entities.rs` usa un Vec denso, reutiliza slots sin reutilizar identificadores obsoletos y comparte el cálculo de columnas con la visibilidad de jugadores. `Room::run` actualiza una arena de 1.024 plazas reservadas antes del tick. `tests/entities.rs` verificó la reutilización, el movimiento entre columnas y cero asignaciones en 1.024 ciclos de inserción, tick y borrado tras el calentamiento.
-- [ ] **T1.2** Broadcast de spawn/move/destroy de entidades vía el zero-copy `Packet(Arc<Shared>)` (wire.rs:199-233) respetando el grid de visibilidad.
+- [x] **T1.2** Broadcast de spawn/move/destroy de entidades vía el zero-copy `Packet(Arc<Shared>)` (wire.rs:199-233) respetando el grid de visibilidad.
 - [ ] **T1.3** Drops de items al romper bloque + pickup por AABB (reutilizar física de engine.rs:925-973).
 - [ ] **T1.4** Orbes de XP (spawn al matar, imán, recoger) sobre la misma arena.
 
@@ -134,6 +134,8 @@ Orden: núcleo de memoria/ECS y Protocolo 47 antes que comandos y orquestación.
 
 ## Siguiente bloque
 
-**T1.2** — Difundir spawn, movimiento y eliminación de entidades mediante paquetes compartidos y por visibilidad. Verificar los bytes de Protocolo 47 con vectores independientes y ejecutar las pruebas TCP.
+**T1.3** — Generar drops al romper bloques y recogerlos por AABB con actualización del inventario.
 
-Última verificación de T1.1 en Windows GNU con Rust 1.100.0 y Nextest 0.9.150. Pasaron `cargo check --workspace --locked`, `cargo clippy --workspace -- -D warnings`, `cargo nextest run --workspace --locked` (3 pruebas) y `tests/protocol47.py` (3 pruebas TCP).
+La prueba de engine/entity_visibility.rs cubre paquetes compartidos, columnas descargadas y reutilización de slots. Los vectores de aparición siguen el esquema 1.8 de PrismarineJS. La generación de entidades durante el juego corresponde a los bloques siguientes.
+
+Última verificación de T1.2 en Windows GNU con Rust 1.100.0 y Nextest 0.9.150. Pasaron `cargo check --workspace --locked`, `cargo clippy --workspace -- -D warnings`, `cargo nextest run --workspace --locked` (5 pruebas) y `tests/protocol47.py` (3 pruebas TCP).

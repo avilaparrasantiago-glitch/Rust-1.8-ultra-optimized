@@ -10,6 +10,12 @@ pub struct EntityId {
     generation: u64,
 }
 
+impl EntityId {
+    pub(crate) fn wire_id(self) -> i32 {
+        -1 - self.slot as i32
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EntityKind {
     Item(Stack),

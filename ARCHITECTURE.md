@@ -142,6 +142,28 @@ Support instant cross-world player transfers (flushing old chunk columns and sen
 
 Prioritized Generation Queue: Order chunk loading/generation by player look vector and velocity; immediately cancel and drop queued chunk tasks when a player teleports away or disconnects.
 
+### Java Edition 1.8.8/1.8.9 world contract
+
+**Implementation rule.** Implement world generation, simulation, structures, redstone and commands in Rust. Use only technologies already named in this architecture. Reuse the engine's dense arenas, paletted columns, Rayon workers, bounded channels, immutable shared packets and libdeflate where they serve those paths. External reference implementations and the official server are offline measurement tools. Ship the Rust implementation with independently verified outputs. Optimize against the same inputs and outputs before accepting a faster algorithm.
+
+Persist the generator identity and revision, seed, world type, options and dimension with each world. Existing Coral normal worlds regenerate distant columns from their original algorithm and sparse edits. Keep that algorithm available for those saves. Give new vanilla-compatible worlds a distinct identity and check it on reopen. Keep imported Anvil terrain authoritative and preserve flat templates and in-memory minigame arenas.
+
+| Dimension | Required output for the default 1.8 generator |
+|---|---|
+| Overworld (0) | Reproduce both GenLayer outputs: the coarse biome grid used by terrain and the final Voronoi block-biome grid. Match island/climate, zoom/edge, hills/mutations, shore and river branches and their seed mixers. Reproduce `NoiseGeneratorImproved` octaves, the simplex-based surface noise, 5 × 33 × 5 density samples per chunk, interpolation to 16 × 256 × 16, water below sea level 63, biome surfaces and bedrock. Choose spawn using vanilla's search. |
+| Nether (−1) | Follow `ChunkProviderHell` for the 128-block terrain, floor and ceiling bedrock, netherrack, lava sea, soul sand, gravel, Nether caves and fortress starts/pieces. Match the population sequence for lava springs, fire, glowstone, mushrooms and quartz. Check fortress chests, spawners and spawn bounds. |
+| End (+1) | Follow `ChunkProviderEnd` and `BiomeEndDecorator` for the central end-stone island, surrounding void, obsidian spikes and crystals. Match arrival platform creation on transfer and exit portal creation on dragon death. Use the dragon lifecycle and spike layout of 1.8. Outer islands, cities, gateways and the later respawn ritual belong to later versions. |
+
+**Reproducibility.** Match Java's 48-bit random stream, bounded draws including rejection, signed `nextLong`, and the separate wrapping 64-bit GenLayer coordinate mixer. Preserve floors at negative coordinates, unsigned shifts, permuted noise tables, float-to-double rounding and operation order. Separate terrain, carving, structure starts, population and lighting. Record the neighborhood, population flags and generation order when features write across chunk boundaries. Parallel workers may compute independent data. Commit overlapping writes in the reference order and publish a consistent column to physics, persistence and clients.
+
+**Structures and decoration.** In the Overworld reproduce caves, ravines, mineshafts, villages, the three default strongholds with biome relocation, scattered desert/jungle temples and swamp huts, and ocean monuments. Include entrances, connected pieces, rotations, bounding boxes, portal rooms, loot, spawners and structure-specific spawning. Follow the provider and biome-specific decorators for lakes, dungeons, soil/gravel/stone variants, all ore distributions, vegetation, passive animals, freezing and snow. Verify structure starts and children in world data across chunk borders, save/reopen and exploration from another direction. Candidate coordinates alone cannot establish the final layout.
+
+**Terrain delivery and rendering.** The server prepares the blocks, metadata, biome IDs, height, block light, dimension-specific sky light and visibility that the client renders. Verify section masks, empty/unload columns, light array lengths and bytes for 0x21/0x26, edits after base terrain, and destination dimension in 0x01/0x07. Keep generation, lighting preparation, serialization, compression and disk I/O off the simulation path when preparing new columns. Bound outstanding work and cache bytes per world, deduplicate identical requests and reject stale results after transfer, cancellation or revision change. Measure request-to-first-visible-column latency alongside tick time.
+
+**Parity and performance gates.** Use official, versioned fixtures for each phase and dimension. Compare decoded Anvil sections, biome arrays, heightmaps, lighting and deterministic structure/tile-entity NBT. Record or normalize incidental timestamps and generated UUIDs. Compare canonical state and independently captured protocol bytes with the same seed, options, neighbor order and simulation time. Report the first differing coordinate, field and phase. Run joins, exploration, teleport, edit, unload and reopen tests on both target versions.
+
+Benchmark generation, population, lighting, first serialization, cache hits and RAM arena instantiation separately. Measure p50/p95/p99, allocations after warm-up, CPU time, queue depth, cache bytes, RSS, bytes per player and missed 50 ms deadlines under exploration, transfers and active simulation. Compare the same builds, seeds, routes, view distance and player counts with Criterion and a symbolized flamegraph. The tick must sustain 20 TPS, with zero hot-loop allocations and zero blocking disk I/O. The <2 ms target applies to arena instantiation from RAM. Keep the existing <150 MB arena, per-player memory and per-core density targets and report the load actually reached.
+
 
 Competitive 1.8 PvP, Knockback & Hitbox Physics
 
@@ -170,7 +192,17 @@ Component-Driven Redstone & Block Physics
 Build a high-speed Redstone propagation engine supporting signal strength decay (0–15), repeaters (1–4 tick delays), comparators (compare/subtract modes), sticky/normal pistons with block-pushing limits, dispensers, droppers, hoppers, TNT priming, and doors/trapdoors/pressure plates.
 
 
-Enforce per-tick update budgets and cycle detection to eliminate infinite-loop stack overflows and lag machines.
+Use bounded, reusable tick queues and cycle detection to prevent recursive stack exhaustion. Preserve legitimate redstone clocks, observable update order, due tick, priority and insertion-order ties in vanilla-compatible worlds. Keep deferred work intact and count backlog and lateness. Publish the load at which the engine meets both parity and the 50 ms budget. Any operator-selected overload policy that changes circuit timing must be explicit.
+
+### Simulation reference for 1.8
+
+| Subsystem | Observable contract |
+|---|---|
+| Tick phases | Trace the outer server loop, per-dimension world tick, then entity/tile-entity updating and tracking. Inside the world tick preserve weather and clocks, spawning, scheduled updates, active chunks and random ticks, villages, portals and queued block events in reference order. Verify with simultaneous scheduled blocks, piston events, entities and containers over multiple ticks and a save/reload. |
+| Collision and living entities | Reproduce swept AABB clipping (Y, X, Z on the ordinary path), step-up alternatives, sneaking at edges, webs, ladders, water/lava, ground slipperiness, fall distance and collision flags. Verify ordinary living vertical acceleration (−0.08) and drag (0.9800000190734863), sprint hits, criticals, knockback, hurt resistance and environmental damage against per-tick state. Preserve player input validation and keep configurable PvP profiles distinguishable from the vanilla profile. |
+| Dropped items | Apply downward acceleration 0.03999999910593033 per tick, push out of solids, move and collide, apply horizontal drag (0.98F in air, ground slipperiness × 0.98F on the ground), vertical drag 0.9800000190734863 and ground bounce −0.5. Check for nearby stacks on change of integer-cast position or every 25 ticks, expanding the AABB by 0.5 on X/Z. Match item, damage, tags, stack capacity, pickup delay, ownership, age, ordinary despawn at 6000 ticks and inventory synchronization. |
+| Weather and random ticks | Persist time, daylight rule, clear/rain/thunder timers and flags. Track previous/current strengths, ramp by 0.01 per tick toward the endpoints and send the matching 0x2B state and intensities on transition or join. Test sleep, dimension behavior, precipitation height, biome temperature, snow/ice and lightning. At default randomTickSpeed 3 sample three positions per eligible ticking section per active chunk. Snow/ice and the conditional 1/100000 lightning draw use the chunk weather logic. |
+| Redstone | Match weak/strong power, wire attenuation and neighbor notification order per component, repeater lock and delays of 2/4/6/8 game ticks, comparator compare/subtract and analog container input. Trace torch burnout at the eighth toggle-off recorded within 60 ticks and recheck after 160. Cover normal/sticky pistons, quasi-connectivity, slime attachments, immovable blocks, 12/13-block boundary and moving tile entities. Cover levers, buttons, plates, doors, trapdoors, rails, tripwire, daylight sensors, lamps, powered dispensers/droppers, hopper transfers and primed TNT with their scheduled effects. |
 
 
 Crafting, Furnaces, Anvils & Enchantments
@@ -207,11 +239,26 @@ Build a zero-allocation selector parser supporting spatial, score, and state fil
 Replace binary is_op checks with a granular 0–4 permission level hierarchy integrated with external permission nodes.
 
 
-Complete Command Registry (~40 Vanilla + World Commands)
+### Dedicated server command registry (Java 1.8.8 and 1.8.9)
 
 
 
-Implement all missing gameplay and administrative commands: give, clear, effect, enchant, xp/experience, spawnpoint, setblock, fill, clone, testfor, testforblock, blockdata, playsound, particle, gamerule, weather, defaultgamemode, seed, save-all/save-on/save-off, stop, ban/ban-ip/pardon/pardon-ip/banlist, list, scoreboard, team, title, tellraw, help, me, execute, spreadplayers, worldborder, debug, plus native world management (/world load|unload|import|clone|tp).
+The official `ServerCommandManager` constructor registers 43 shared canonical commands and 15 additional dedicated commands. The integrated-server branch adds `publish` to the shared set. Aliases have separate tests. This inventory defines T5.2.
+
+| Invocation group | Canonical names |
+|---|---|
+| Players, entities and inventory | achievement, clear, defaultgamemode, effect, enchant, entitydata, gamemode, give, kill, replaceitem, spawnpoint, spreadplayers, summon, tp, xp |
+| Blocks, world and time | blockdata, clone, difficulty, fill, gamerule, seed, setblock, setworldspawn, testforblock, testforblocks, time, toggledownfall, weather, worldborder |
+| Execution, messages and events | debug, execute, help, me, particle, playsound, say, scoreboard, stats, tell, tellraw, testfor, title, trigger |
+| Dedicated administration | ban, ban-ip, banlist, deop, kick, list, op, pardon, pardon-ip, save-all, save-off, save-on, setidletimeout, stop, whitelist |
+
+Test `?` for help and `w`/`msg` for tell. Teams use `scoreboard teams`. Coral's `/world load|unload|import|clone|tp`, `team`, `gm`, `teleport` and `experience` are extensions. Maintain command-specific grammar, relative coordinates, 1.8 identifiers, JSON chat and typed Mojangson NBT, including lists, compounds and numeric suffixes. Match selector positional shorthand, box/radius/rotation/level/score filters, negation where supported, count/order and entity eligibility. Test as player, console and command block at permission levels 0–4. Capture actual changes, result statistics, usage/errors, tab suggestions and visibility of administrative operations.
+
+### Reference material and scope
+
+The two official server artifacts identify the behavior under test. For this specification the dedicated command constructor was inspected in both, and the final biome grid was executed in each. The artifact SHA-1s are `5fafba3f58c40dc51b5c3ca72a98f62dfdae1db7` (1.8.8) and `b58b2ceb36e01bcd8dbf49c8fb66c55a9f0676cd` (1.8.9). The reproducible biome vector is in ROADMAP T2.4a. MCP mappings identify the obfuscated classes for inspection. [Mojang 1.8.8 metadata](https://piston-meta.mojang.com/v1/packages/690172f1227e1c1d2fa8fceadd0f578f7851a69e/1.8.8.json) · [Mojang 1.8.9 metadata](https://piston-meta.mojang.com/v1/packages/d546f1707a3f2b7d034eece5ea2e311eda875787/1.8.9.json) · [MCP 1.8.9 SRG mappings](https://maven.minecraftforge.net/de/oceanlabs/mcp/mcp/1.8.9/mcp-1.8.9-srg.zip) · [RetroMCP workflow](https://github.com/MCPHackers/RetroMCP-Java/tree/9ece383d9bfe993d763d75b503e913f0dfbd8852)
+
+Use cubiomes at `MC_1_8` for independent layer maps and structure candidates/biome viability. SeedFinding provides a second reading of the seed, biome and density algorithms. Its terrain constructor explicitly labels versions before 1.11 untested. Use official worlds for final block placement, decoration, light and NBT. [cubiomes layers](https://github.com/Cubitect/cubiomes/blob/e61f90580cbdd883214a8054670dacae655e59c0/generator.c) · [structure finders](https://github.com/Cubitect/cubiomes/blob/e61f90580cbdd883214a8054670dacae655e59c0/finders.h) · [SeedFinding terrain version check](https://github.com/SeedFinding/mc_terrain_java/blob/a03e440ec5b282e399382f2cc5ad0db91b438d2e/src/main/java/com/seedfinding/mcterrain/TerrainGenerator.java) · [biome layers](https://github.com/SeedFinding/mc_biome_java/tree/17af8cb1110fdc983b7cb2b887d1fb2060e23ee3) · [seed and random streams](https://github.com/SeedFinding/mc_seed_java/tree/55f6242001f7eb4226df4ed0d023f1838a54a99d) · [math](https://github.com/SeedFinding/mc_math_java/tree/851e9d0577dfdca50154e98f1d334bd31c641326) · [PrismarineJS 1.8 packet schema](https://github.com/PrismarineJS/minecraft-data/blob/master/data/pc/1.8/proto.yml)
 
 
 Stateless Edge Proxy & Limbo/Queue Layer

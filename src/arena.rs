@@ -12,6 +12,10 @@ const MAX_TEMPLATE: usize = 64 << 20;
 pub type ColumnPos = (i32, i32);
 pub type BlockPos = (i32, u8, i32);
 
+pub(crate) fn column(pos: [f64; 3]) -> ColumnPos {
+    (pos[0].floor() as i32 >> 4, pos[2].floor() as i32 >> 4)
+}
+
 #[derive(Clone)]
 pub(crate) struct Section {
     pub(crate) palette: Vec<u16>,

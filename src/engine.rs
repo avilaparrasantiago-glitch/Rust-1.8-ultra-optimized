@@ -1,7 +1,8 @@
 mod windows;
 use crate::{
-    arena::{BlockPos, ColumnPos, Template, World},
+    arena::{BlockPos, ColumnPos, Template, World, column},
     config::{Config, valid_world},
+    entities::EntityArena,
     identity::Identity,
     input::Action,
     inventory::Inventory,
@@ -24,6 +25,8 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
+
+const ENTITIES_PER_ROOM: usize = 1024;
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Window {
@@ -313,6 +316,7 @@ impl Manager {
                     mgr,
                     local,
                     players: Vec::new(),
+                    entities: EntityArena::with_capacity(ENTITIES_PER_ROOM),
                     tick: 0,
                     signs: HashMap::new(),
                     time: 0,
@@ -353,6 +357,7 @@ pub struct Room {
     pub mgr: Arc<Manager>,
     local: Arc<Lane>,
     pub players: Vec<Player>,
+    entities: EntityArena,
     tick: u64,
     circuit: crate::redstone::Circuit,
     changed: Vec<(BlockPos, u16)>,
@@ -367,9 +372,6 @@ pub struct Room {
 }
 pub fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
     (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)
-}
-fn column(pos: [f64; 3]) -> ColumnPos {
-    (pos[0].floor() as i32 >> 4, pos[2].floor() as i32 >> 4)
 }
 impl Room {
     fn run(&mut self, rx: Receiver<(Box<Player>, bool)>) {
@@ -437,6 +439,7 @@ impl Room {
                 self.advance(i);
                 i += 1;
             }
+            self.entities.tick();
             self.circuit
                 .step(&mut self.world, self.tick, &mut self.changed);
             for &(pos, state) in &self.changed {

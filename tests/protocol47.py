@@ -174,7 +174,10 @@ class PlayTests(unittest.TestCase):
             self.assertEqual((cx, cz, full, mask), (0, 0, 1, 1))
             length, start = number(chunk, 11)
             self.assertEqual(length, 12288 + 256)
-            self.assertEqual(len(chunk[start:]), length)
+            # Vanilla 1.8 section in YZX order, then block light, sky light and biomes.
+            blocks = (b"\x70\x00" * 256 + b"\x30\x00" * 512
+                      + b"\x20\x00" * 256 + bytes(3072 * 2))
+            self.assertEqual(chunk[start:], blocks + bytes(2048) + b"\xff" * 2048 + b"\x01" * 256)
             b = self.client(port)
             b.login("Bob")
             b.confirm_pos()

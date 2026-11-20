@@ -101,3 +101,16 @@ fn tick_advances_entities_across_columns_without_allocating_after_warmup() {
     assert_eq!(allocations, Some(0));
     assert_eq!(arena.get(arrow).unwrap().age, 1025);
 }
+
+#[test]
+fn cached_column_packet_needs_no_new_allocation() {
+    let template = coral_engine::arena::Template::flat(0);
+    let first = template.packet((0, 0)).unwrap();
+    ALLOCATIONS.with(|count| count.set(Some(0)));
+    for _ in 0..1024 {
+        let cached = template.packet((0, 0)).unwrap();
+        assert_eq!(cached.body().as_ptr(), first.body().as_ptr());
+    }
+    let allocations = ALLOCATIONS.with(|count| count.replace(None));
+    assert_eq!(allocations, Some(0));
+}

@@ -204,7 +204,14 @@ struct Shared {
 }
 impl Packet {
     pub fn new(id: i32, fill: impl FnOnce(&mut BytesMut)) -> Self {
-        let mut body = BytesMut::with_capacity(48);
+        Self::with_capacity(id, 48, fill)
+    }
+    pub(crate) fn with_capacity(
+        id: i32,
+        capacity: usize,
+        fill: impl FnOnce(&mut BytesMut),
+    ) -> Self {
+        let mut body = BytesMut::with_capacity(capacity);
         body.var(id);
         fill(&mut body);
         Self(Arc::new(Shared {

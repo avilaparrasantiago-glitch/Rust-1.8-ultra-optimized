@@ -1,12 +1,69 @@
 use super::{ENTITIES_PER_ROOM, Player, distance};
 use crate::{
-    arena::ColumnPos,
+    arena::{ColumnPos, World},
     entities::{Entity, EntityArena, EntityId, EntityKind},
     packets as p,
     wire::{Packet, WriteWire},
 };
 use bytes::BufMut;
 use std::collections::HashMap;
+
+// Protocol 47 does not report the client FOV. Use a generous 160 x 130 degree
+// frustum and a margin around the target to avoid clipping at the screen edge.
+pub(super) struct View {
+    yaw: (f64, f64),
+    pitch: (f64, f64),
+}
+
+impl View {
+    pub(super) fn new([yaw, pitch]: [f32; 2]) -> Self {
+        Self {
+            yaw: f64::from(yaw).to_radians().sin_cos(),
+            pitch: f64::from(pitch).to_radians().sin_cos(),
+        }
+    }
+
+    pub(super) fn visible(&self, world: &World, eye: [f64; 3], pos: [f64; 3], height: f64) -> bool {
+        let [dx, dy, dz] = [
+            pos[0] - eye[0],
+            pos[1] + height * 0.5 - eye[1],
+            pos[2] - eye[2],
+        ];
+        let (sy, cy) = self.yaw;
+        let (sp, cp) = self.pitch;
+        let horizontal = dz * cy - dx * sy;
+        let depth = horizontal * cp - dy * sp;
+        let side = dx * cy + dz * sy;
+        let up = dy * cp + horizontal * sp;
+        let margin = height.max(1.);
+        if depth < -margin
+            || side.abs() > (depth + margin) * 5.6713 + margin
+            || up.abs() > (depth + margin) * 2.1445 + margin
+        {
+            return false;
+        }
+        let radius = (height * 0.3).clamp(0.125, 1.);
+        [
+            (0., height * 0.5, 0.),
+            (-radius, height * 0.95, -radius),
+            (radius, height * 0.95, radius),
+            (-radius, height * 0.05, radius),
+            (radius, height * 0.05, -radius),
+        ]
+        .into_iter()
+        .any(|(x, y, z)| super::clear_ray(world, eye, [pos[0] + x, pos[1] + y, pos[2] + z]))
+    }
+}
+
+pub(super) fn interval(d2: f64) -> u64 {
+    if d2 < 16. * 16. {
+        1
+    } else if d2 < 48. * 48. {
+        2
+    } else {
+        4
+    }
+}
 
 pub(super) type Seen = HashMap<EntityId, ([i32; 3], Packet)>;
 
@@ -61,6 +118,8 @@ fn spawn(id: i32, e: &Entity, pos: [i32; 3]) -> (Packet, Option<Packet>) {
 }
 
 pub(super) fn broadcast(
+    world: &World,
+    tick: u64,
     arena: &EntityArena,
     grid: &HashMap<ColumnPos, Vec<usize>>,
     players: &mut [Player],
@@ -93,6 +152,25 @@ pub(super) fn broadcast(
                     if !player.loaded.contains(&center)
                         || distance(player.pos, entity.position) > 80. * 80.
                     {
+                        continue;
+                    }
+                    let d2 = distance(player.pos, entity.position);
+                    if !tick.is_multiple_of(interval(d2)) {
+                        continue;
+                    }
+                    let height = match entity.kind {
+                        EntityKind::Mob { .. } => 2.,
+                        EntityKind::Arrow => 0.5,
+                        _ => 0.25,
+                    };
+                    if d2 >= 256.
+                        && !player
+                            .view
+                            .visible(world, player.eye(), entity.position, height)
+                    {
+                        if let Some((_, packet)) = player.seen_entities.remove(&handle) {
+                            player.send(packet);
+                        }
                         continue;
                     }
                     if let Some((previous, _)) = player.seen_entities.get_mut(&handle) {
@@ -128,6 +206,28 @@ pub(super) fn broadcast(
 mod tests {
     use super::*;
     use crate::{entities::EntityKind, identity::offline};
+
+    #[test]
+    fn distant_entities_respect_view_and_walls() {
+        let mut world = crate::arena::World::new(
+            "test".into(),
+            std::sync::Arc::new(crate::arena::Template::flat(2)),
+        );
+        let camera = View::new([0., 0.]);
+        let eye = [0.5, 5.62, 0.5];
+        assert!(camera.visible(&world, eye, [0.5, 4., 24.5], 1.8));
+        assert!(!camera.visible(&world, eye, [0.5, 4., -24.5], 1.8));
+        assert!(View::new([180., 0.]).visible(&world, eye, [0.5, 4., -24.5], 1.8));
+        for x in -1..=1 {
+            for y in 4..=7 {
+                world.set((x, y, 12), 16).unwrap();
+            }
+        }
+        assert!(!camera.visible(&world, eye, [0.5, 4., 24.5], 1.8));
+        world.set((0, 5, 12), 0).unwrap();
+        assert!(camera.visible(&world, eye, [0.5, 4., 24.5], 1.8));
+        assert_eq!([interval(225.), interval(256.), interval(2304.)], [1, 2, 4]);
+    }
 
     #[test]
     fn object_and_mob_packet_vectors() {
@@ -186,6 +286,10 @@ mod tests {
         }
         let grid = HashMap::from([((0, 0), vec![0, 1, 2])]);
         let mut arena = EntityArena::with_capacity(1);
+        let world = World::new(
+            "test".into(),
+            std::sync::Arc::new(crate::arena::Template::flat(0)),
+        );
         let orb = Entity {
             kind: EntityKind::Orb { value: 3 },
             position: [1., 0., 0.],
@@ -193,7 +297,7 @@ mod tests {
             age: 0,
         };
         let id = arena.insert(orb).unwrap();
-        broadcast(&arena, &grid, &mut players);
+        broadcast(&world, 0, &arena, &grid, &mut players);
         let first = receivers[0].try_recv().unwrap();
         assert_eq!(
             first.body(),
@@ -207,7 +311,7 @@ mod tests {
         );
         arena.tick();
         players[1].loaded.clear();
-        broadcast(&arena, &grid, &mut players);
+        broadcast(&world, 0, &arena, &grid, &mut players);
         assert_eq!(receivers[0].try_recv().unwrap().body()[0], 0x18);
         assert_eq!(
             receivers[1].try_recv().unwrap().body(),
@@ -215,7 +319,7 @@ mod tests {
         );
         arena.remove(id);
         arena.insert(orb).unwrap();
-        broadcast(&arena, &grid, &mut players);
+        broadcast(&world, 0, &arena, &grid, &mut players);
         assert_eq!(receivers[0].try_recv().unwrap().body()[0], 0x13);
         assert_eq!(receivers[0].try_recv().unwrap().body(), first.body());
         assert!(receivers[2].try_recv().is_err());

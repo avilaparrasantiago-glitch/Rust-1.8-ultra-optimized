@@ -20,7 +20,7 @@ Estado contrastado con los puntos de entrada del código. Las referencias descri
 | Zero-copy broadcast `Packet(Arc<Shared>)` + `OnceLock<Bytes>` | CUBIERTO | wire.rs:199-233 |
 | Loop de tick 50 ms | CUBIERTO | engine.rs:375-492 |
 | Cero asignaciones en el tick | PARCIAL | engine.rs, `Room::visibility`, reconstruye colecciones por jugador. También se crean paquetes durante el tick. Falta medir el loop completo bajo carga. |
-| Frecuencia adaptativa y oclusión | PARCIAL | engine.rs, `Room::visibility`, usa distancia y línea de visión para jugadores. Falta frustum y extenderlo a entidades no jugador. |
+| Frecuencia adaptativa y oclusión | PARCIAL | engine.rs, `Room::visibility`, usa distancia y línea de visión para jugadores. T2.3 extiende los filtros de orientación y oclusión a jugadores y entidades no jugador. Falta medir el ahorro de ancho de banda con carga. |
 | Thread-per-core con pinning de I/O | FALTA | main.rs:83-91 usa `current_thread`+`LocalSet`; pinning solo en hilos de sim por mundo (engine.rs:299-303) |
 
 ### 2. Protocolo 47 — PARCIAL
@@ -75,7 +75,7 @@ Estado contrastado con los puntos de entrada del código. Las referencias descri
 | Forwarding HMAC Coral47/1 + replay nonce | CUBIERTO | identity.rs:40-99 |
 | NATS chat bus + Redis heartbeat | CUBIERTO | mesh.rs:25, 49-51 |
 
-Extras verificados en el código: linux/coral_xdp.c limita SYN IPv4/IPv6 en el puerto 25565. Quedan el despliegue y las pruebas de línea (T6.3). tests/protocol47.py contiene cinco pruebas TCP. benches/transport.rs define el benchmark de Criterion.
+Extras verificados en el código: linux/coral_xdp.c limita SYN IPv4/IPv6 en el puerto 25565. Quedan el despliegue y las pruebas de línea (T6.3). tests/protocol47.py contiene seis pruebas TCP. benches/transport.rs define el benchmark de Criterion.
 
 Higiene: repositorio Git activo. `git check-ignore` confirmó las exclusiones de target/, data/ y *.log. Cargo.lock incluye Criterion y sus dependencias para que las comprobaciones con `--locked` puedan resolver los benchmarks declarados en Cargo.toml.
 
@@ -103,7 +103,7 @@ Orden: núcleo de memoria/ECS y Protocolo 47 antes que comandos y orquestación.
 
 - [x] **T2.1** Optimizar la expansión de las paletas internas de `Section` al serializar columnas. Conservar el formato u16 little-endian de Protocolo 47 y verificar los bytes con un vector independiente. Medir la primera serialización y la lectura desde caché.
 - [x] **T2.2** MapChunkBulk: agrupar columnas contiguas en un solo paquete 0x26 con continuación bitmask.
-- [ ] **T2.3** Culling de entidades: frustum + occlusion por ray-marching de voxeles para suprimir packets de entidad fuera de vista; throttle adaptativo 20 Hz <16 bloques / 5–10 Hz >48 (usando el grid engine.rs:1020-1091).
+- [x] **T2.3** Culling de entidades: frustum + occlusion por ray-marching de voxeles para suprimir packets de entidad fuera de vista; throttle adaptativo 20 Hz <16 bloques / 5–10 Hz >48 (usando el grid engine.rs:1020-1091).
 
 - [ ] **T2.4a** Generador propio de Overworld normal al estilo de Java 1.8. Obtener relieve, costas, océanos, ríos y biomas a partir de la semilla guardada. Comprobar continuidad de chunks, incluidas coordenadas negativas, y reproducibilidad con distinto orden de carga.
 - [ ] **T2.4b** Poblar el terreno con cuevas, minerales, vegetación y estructuras según el bioma. Verificar las formaciones que cruzan chunks y un punto de aparición transitable.
@@ -144,7 +144,7 @@ Contrastar los resultados con [ARCHITECTURE.md](ARCHITECTURE.md). Durante explor
 
 ## Siguiente bloque
 
-**T2.3** — Visibilidad por orientación y oclusión de entidades con frecuencia adaptativa.
+**T2.4a** — Generación propia de terreno normal de estilo Java 1.8 a partir de la semilla persistente.
 
 La prueba de engine/entity_visibility.rs cubre paquetes compartidos, columnas descargadas y reutilización de slots. Los vectores de aparición siguen el esquema 1.8 de PrismarineJS. La generación de entidades durante el juego corresponde a los bloques siguientes.
 
@@ -159,3 +159,5 @@ T2.1 — src/arena.rs expande secuencialmente los índices de 0 a 12 bits por bl
 Medición T2.1 con Criterion 0.5.1 sobre Windows GNU, Intel Core i3-1005G1, Rust 1.100.0, perfil dev con símbolos y opt-level 3 para el paquete principal. Columna plana de una sección, ambos binarios ejecutados consecutivamente, un hilo de análisis, 1 s de calentamiento, 3 s de medición, 30 muestras. La primera serialización pasó de 31,87 µs (IC 95 % 31,14–32,84) a 13,33 µs (12,85–13,79). En caché pasó de 24,69 ns (24,15–25,48) a 24,33 ns (24,21–24,44). En mediciones separadas de 20 muestras, leer y descomprimir una plantilla de 81 columnas tardó 530,35 µs con el archivo en caché del sistema, y construir World con la plantilla en RAM tardó 153,06 ns. El perfil de CPU de 4 s se capturó con flamegraph a 99 Hz; el backend de Windows mostró direcciones sin resolver. Estas cifras corresponden al microbenchmark de serialización y no miden los TPS del servidor bajo carga.
 
 T2.2 — Las dos columnas priorizadas del tick comparten un paquete 0x26 cuando son adyacentes; las demás usan 0x21. Cada sala reutiliza su último lote y envía los cambios de bloques y carteles después del terreno. En Windows GNU pasaron check, Clippy, nueve pruebas Rust y cinco TCP. La prueba de transferencia comprueba las dos cabeceras, el orden de los datos y los bytes del lote y de una columna individual.
+
+T2.3 — engine/entity_visibility.rs aplica una vista conservadora de 160 × 130 grados y hasta cinco rayos de prueba contra bloques sólidos a partir de 16 bloques. A 20 TPS, el intervalo de movimiento es de 1 tick cerca, 2 ticks desde 16 bloques y 4 ticks desde 48 bloques. En Windows GNU pasaron check, Clippy, diez pruebas Rust y seis pruebas TCP. La prueba con dos clientes comprueba la retirada de un jugador distante y su reaparición al girar la cámara. La reducción de tráfico bajo carga sigue pendiente de medición.

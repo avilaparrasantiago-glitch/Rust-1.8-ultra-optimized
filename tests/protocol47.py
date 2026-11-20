@@ -256,6 +256,22 @@ class PlayTests(unittest.TestCase):
             self.assertEqual(a.until(0x13), var(1) + var(orb))
             self.assertEqual(b.until(0x1f), bytes.fromhex("000000000000"))
 
+    def test_turning_reveals_distant_player(self):
+        with server() as (port, _):
+            a = self.client(port)
+            a.login("Alice")
+            a.confirm_pos()
+            b = self.client(port)
+            b.login("Bob")
+            b.confirm_pos()
+            peer, _ = number(a.until(0x0c))
+            a.send(5, struct.pack(">ffB", 0., 0., 1))
+            a.chat("/tp Bob 0.5 4 -15.9")
+            b.confirm_pos()
+            self.assertEqual(a.until(0x13), var(1) + var(peer))
+            a.send(5, struct.pack(">ffB", 180., 0., 1))
+            self.assertEqual(number(a.until(0x0c))[0], peer)
+
     def test_queue_promotion(self):
         with server(max_players=1) as (port, _):
             a = self.client(port)

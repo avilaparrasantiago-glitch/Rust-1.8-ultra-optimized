@@ -41,6 +41,7 @@ pub struct Player {
     pub identity: Identity,
     pub pos: [f64; 3],
     pub look: [f32; 2],
+    view: entity_visibility::View,
     pub mode: u8,
     pub hp: f32,
     pub xp: i32,
@@ -90,6 +91,7 @@ impl Player {
             failed: AtomicBool::new(false),
             pos: [0.; 3],
             look: [0.; 2],
+            view: entity_visibility::View::new([0.; 2]),
             mode: 0,
             hp: 20.,
             xp: 0,
@@ -167,6 +169,9 @@ impl Player {
         self.center = None;
         self.revision += 1;
         self.send(p::position(pos, self.look));
+    }
+    fn eye(&self) -> [f64; 3] {
+        [self.pos[0], self.pos[1] + 1.62, self.pos[2]]
     }
     pub fn harm(&mut self, amount: f32) {
         if amount <= 0. {
@@ -972,6 +977,7 @@ impl Room {
                 a.revision += 1;
             }
             a.look = look;
+            a.view = entity_visibility::View::new(look);
         }
         let Some(pos) = pos else {
             return;
@@ -1053,7 +1059,13 @@ impl Room {
         for (i, p) in self.players.iter().enumerate() {
             self.grid.entry(column(p.pos)).or_default().push(i);
         }
-        entity_visibility::broadcast(&self.entities, &self.grid, &mut self.players);
+        entity_visibility::broadcast(
+            &self.world,
+            self.tick,
+            &self.entities,
+            &self.grid,
+            &mut self.players,
+        );
         for i in 0..self.players.len() {
             let viewer = &self.players[i];
             let c = column(viewer.pos);
@@ -1073,20 +1085,18 @@ impl Room {
                     if d > 80. * 80. {
                         continue;
                     }
-                    let interval = if d < 256. {
-                        1
-                    } else if d < 48. * 48. {
-                        2
-                    } else {
-                        4
-                    };
+                    let interval = entity_visibility::interval(d);
                     let known = viewer.seen.get(&target.id);
                     // Retain the last absolute position between visibility evaluations.
                     if known.is_some() && !self.tick.is_multiple_of(interval) {
                         observed.insert(target.id);
                         continue;
                     }
-                    if d >= 256. && !line_clear(&self.world, origin, target.pos) {
+                    if d >= 256.
+                        && !viewer
+                            .view
+                            .visible(&self.world, viewer.eye(), target.pos, 1.8)
+                    {
                         continue;
                     }
                     observed.insert(target.id);
@@ -1134,6 +1144,10 @@ fn body_blocked(w: &World, p: [f64; 3]) -> bool {
     solid(w, p) || solid(w, [p[0], p[1] + 1.62, p[2]])
 }
 fn line_clear(w: &World, a: [f64; 3], b: [f64; 3]) -> bool {
+    clear_ray(w, [a[0], a[1] + 1.5, a[2]], [b[0], b[1] + 1.5, b[2]])
+}
+
+fn clear_ray(w: &World, a: [f64; 3], b: [f64; 3]) -> bool {
     let steps = (distance(a, b).sqrt() * 2.).ceil() as usize;
     (1..steps).all(|i| {
         let t = i as f64 / steps as f64;
@@ -1141,7 +1155,7 @@ fn line_clear(w: &World, a: [f64; 3], b: [f64; 3]) -> bool {
             w,
             [
                 a[0] + (b[0] - a[0]) * t,
-                a[1] + 1.5 + (b[1] - a[1]) * t,
+                a[1] + (b[1] - a[1]) * t,
                 a[2] + (b[2] - a[2]) * t,
             ],
         )

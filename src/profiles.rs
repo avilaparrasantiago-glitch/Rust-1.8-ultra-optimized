@@ -1,4 +1,5 @@
 use crate::{packets::Stack, wire::invalid};
+use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 use sqlx::{AnyPool, Row, any::AnyPoolOptions};
 use std::{
@@ -98,12 +99,20 @@ fn now() -> i64 {
 impl Profiles {
     pub async fn open(dir: &Path, url: Option<String>, capacity: usize) -> io::Result<Arc<Self>> {
         sqlx::any::install_default_drivers();
-        let url = url.unwrap_or_else(|| {
-            format!(
-                "sqlite://{}?mode=rwc",
-                dir.join("profiles.sqlite").display()
-            )
-        });
+        let url = match url {
+            Some(url) => url,
+            None => {
+                let path = dir.join("profiles.sqlite");
+                let path = path
+                    .to_str()
+                    .ok_or_else(|| invalid("profile database path must be valid UTF-8"))?;
+                // An opaque SQLite URL keeps the filename out of the URL authority.
+                format!(
+                    "sqlite:{}?mode=rwc",
+                    utf8_percent_encode(path, NON_ALPHANUMERIC)
+                )
+            }
+        };
         let pool = AnyPoolOptions::new()
             .max_connections(8)
             .acquire_timeout(Duration::from_secs(5))
@@ -227,5 +236,22 @@ async fn writer(pool: AnyPool, mut rx: mpsc::Receiver<Message>, spool: PathBuf) 
             let _ = tx.send(result);
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Profiles;
+
+    #[tokio::test]
+    async fn opens_default_database_in_directory_with_url_characters() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("world # 100%");
+        std::fs::create_dir(&dir).unwrap();
+
+        let profiles = Profiles::open(&dir, None, 1).await.unwrap();
+        profiles.close().await.unwrap();
+
+        assert!(dir.join("profiles.sqlite").is_file());
     }
 }

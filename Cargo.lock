@@ -291,6 +291,7 @@ dependencies = [
  "md-5",
  "memmap2",
  "mlua",
+ "percent-encoding",
  "rayon",
  "redis",
  "serde",

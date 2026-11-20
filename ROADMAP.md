@@ -69,7 +69,7 @@ Estado contrastado con los puntos de entrada del código. Las referencias descri
 | Aspecto | Estado | Evidencia |
 |---|---|---|
 | Guardado periódico y bloqueo exclusivo de mundo | CUBIERTO | persistence.rs, `Store::open`, `save` y `close` usan `File::try_lock` y un hilo de exportación. |
-| sqlx AnyPool lease/claim + spool de disco | CUBIERTO | profiles.rs:129-231 |
+| sqlx AnyPool lease/claim + spool de disco | CUBIERTO | profiles.rs, `Profiles::open` y `claim`, y `writer`. La ruta SQLite local se codifica antes de construir la URL. |
 | Métricas y /health | PARCIAL | metrics.rs expone histograma del tick, bytes y aciertos de caché. Falta el contador de entidades activas. |
 | Seed persistente, rechazo de listeners públicos sin forwarding | CUBIERTO | config.rs:88-116, 59-61 |
 | Forwarding HMAC Coral47/1 + replay nonce | CUBIERTO | identity.rs:40-99 |
@@ -88,6 +88,7 @@ Orden: núcleo de memoria/ECS y Protocolo 47 antes que comandos y orquestación.
 ### Fase 0 — Higiene (prerrequisito de todo commit)
 
 - [x] **T0.1** Repositorio Git activo desde la importación inicial. .gitignore excluye target/, data/ y *.log.
+- [x] **T0.2** Corregir el arranque con SQLite local. `Profiles::open` conserva la ruta completa en una URL SQLite codificada. Nextest verificó una ruta con espacios, `#` y `%`. Las tres pruebas TCP pasaron en Windows.
 
 ### Fase 1 — Núcleo de memoria/ECS
 

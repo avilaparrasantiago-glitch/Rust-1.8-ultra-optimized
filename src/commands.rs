@@ -60,12 +60,17 @@ fn canonical(s: &str) -> &str {
 }
 fn allowed(room: &Room, sender: &Player, name: &str, lvl: u8) -> bool {
     let uuid = sender.identity.uuid;
-    room.mgr.cfg.operators.get(&uuid).copied().unwrap_or(0) >= lvl
-        || room.mgr.cfg.permissions.get(&uuid).is_some_and(|nodes| {
-            nodes
-                .iter()
-                .any(|n| n.strip_prefix("coral.command.") == Some(name))
-        })
+    let cfg = &room.mgr.cfg;
+    let lease = sender.lease.as_ref();
+    cfg.operators.get(&uuid).copied().unwrap_or(0) >= lvl
+        || lease.is_some_and(|l| l.level >= lvl)
+        || cfg
+            .permissions
+            .get(&uuid)
+            .into_iter()
+            .flatten()
+            .chain(lease.into_iter().flat_map(|l| &l.nodes))
+            .any(|node| node.strip_prefix("coral.command.") == Some(name))
 }
 fn targets(room: &Room, i: usize, s: Option<&str>) -> io::Result<Vec<usize>> {
     let Some(s) = s else {

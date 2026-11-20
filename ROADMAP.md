@@ -8,70 +8,56 @@ Reglas de bloque (AGENTS.md): una tarea atómica por iteración, TDD, sin `.unwr
 
 ## Estado comprobado (2026-11-20)
 
-Verificado leyendo los 22 módulos de `src/` (5.947 líneas). Clasificación: CUBIERTA / PARCIAL / FALTA.
+Revisión de la base `396734a` y del bloque T5.1. «Probado» identifica un recorrido ejecutado en Windows x64. «En código» identifica una ruta inspeccionada. Los objetivos de escala de ARCHITECTURE.md siguen pendientes de medición con carga representativa.
 
 ### 1. Runtime y transporte — PARCIAL
 
-| Aspecto | Estado | Evidencia |
+| Aspecto | Evidencia | Pendiente |
 |---|---|---|
-| io_uring en Linux | CUBIERTO | main.rs:79-82, network.rs:28-29, `Socket::read/write` network.rs:33-69 |
-| Batching 50 ms ≤192 paquetes + pool rayon deflate | CUBIERTO | network.rs:82-113, 390-423 |
-| Umbral dinámico de compresión 256/512 | CUBIERTO | network.rs:295-301, wire.rs:164-196 |
-| Zero-copy broadcast `Packet(Arc<Shared>)` + `OnceLock<Bytes>` | CUBIERTO | wire.rs:199-233 |
-| Loop de tick 50 ms | CUBIERTO | engine.rs:375-492 |
-| Thread-per-core con pinning de I/O | FALTA | main.rs:83-91 usa `current_thread`+`LocalSet`; pinning solo en hilos de sim por mundo (engine.rs:299-303) |
+| Batching y compresión | `network.rs`, `Workers::batch` y escritor de sesión. Hasta 192 paquetes por ventana de 50 ms, codificación por paquete con libdeflate en Rayon y concatenación para el socket. El umbral 256/512 se negocia al entrar. TCP probado. | Medir coste y ahorro bajo carga. Protocolo 47 conserva un frame independiente por paquete. |
+| Difusión y tick | `wire.rs`, `Packet::encoded`; `engine/entity_view_tests.rs` prueba buffers compartidos y cero asignaciones en el recorrido de entidades. | El tick completo sigue creando colecciones y paquetes, por ejemplo en `Room::visibility` y `Room::advance`. Faltan mediciones de TPS, p99, RAM y densidad por núcleo. |
+| I/O y afinidad | `main.rs` inicia tokio-uring en Linux. `network.rs` usa sus sockets. `Manager::create` intenta fijar el hilo de cada mundo. | Runtime de I/O por núcleo, comprobación del pinning y prueba de la ruta io_uring en Linux. |
 
-### 2. Protocolo 47 — CUBIERTA
+### 2. Protocolo 47 — PARCIAL
 
-| Aspecto | Estado | Evidencia |
+| Aspecto | Evidencia | Pendiente |
 |---|---|---|
-| Salida secundaria: respawn 0x07, abilities 0x39, game_state 0x2b, sign 0x33, effect 0x28, particle 0x2a, stats 0x37, tab-complete 0x3a, set_slot 0x2f, map 0x34 | CUBIERTO | packets.rs:55-197 |
-| Entrada 0x00–0x19 | CUBIERTA | input.rs:107-289 |
-| Sanitización: VarInt ≤5 bytes, floats no finitos, coords ≤30M, límites de string, MAX_FRAME/MAX_BODY, profundidad/presupuesto NBT en slots | CUBIERTO | wire.rs:9-10, 15-31, 78-109; input.rs:45-105 |
+| Codificación y estados | `packets.rs` implementa los diez constructores secundarios solicitados. Las pruebas TCP ejercitan login, status, juego, transferencia, inventario, estadísticas y completado. Los vectores en `entity_view_tests.rs` cubren las entidades de T1.2. | El constructor de mapas carece de productor de juego. Faltan vectores y pruebas funcionales para el resto del catálogo y sesiones con clientes reales. |
+| Entrada y autoridad | `input::decode` reconoce 0x00–0x19. `wire::Cursor`, el lector NBT y `Room::movement` limitan tamaños, profundidad, valores no finitos y movimiento. | Varias ramas devuelven `Action::Ignore`, entre ellas interacción con vehículos, confirmación de transacción y recursos. Falta demostrar comportamiento y validación por acción. |
 
 ### 3. Mundo — PARCIAL
 
-| Aspecto | Estado | Evidencia |
+| Aspecto | Evidencia | Pendiente |
 |---|---|---|
-| Formato plano CORAL47 + zstd (template/load/save) | CUBIERTO | arena.rs:115/141/176 (cap 64 MiB) |
-| `Column::packet` | FALTA meshing | arena.rs:89-100 manda u16 por bloque sin comprimir |
-| Anvil .mca import/export | CUBIERTO | anvil.rs:156/333; memmap2 solo snapshot anónimo (189-191) |
-| Manager multi-mundo con carriles, transfer Respawn, cola priorizada/cancelable (2 cols/tick, unload) | CUBIERTO | engine.rs:203-348, 415-431, 693-738 |
-| Overlay de ediciones `Arc<Edits>` | CUBIERTO | arena.rs:283-307 |
+| CORAL47 y chunks | `arena.rs` guarda paletas e índices empaquetados con Zstd. `Column::packet` escribe estados u16 little-endian, iluminación y biomas para 1.8. La suite TCP comprobó longitud y máscara de la columna inicial. | Medir carga fría, caché e instanciación por separado frente al objetivo de 2 ms. Falta MapChunkBulk. |
+| Anvil | `anvil.rs`, `Store::open` y CLI. En la auditoría, crear arena plana → exportar .mca → importar → servir por TCP produjo el mismo paquete 0x21 para (0,0). | Cobertura de NBT de mundos reales, entidades persistentes y tile entities. La lectura copia a un mapa anónimo y la importación inicial es síncrona. |
+| Mundos y visibilidad | `Manager`, `Room::advance` y `World::set`. Transferencia con Respawn probada por TCP. Cola por distancia, orientación y desplazamiento; dos columnas por tick. Superposición de ediciones sobre la plantilla. | Medir cancelación bajo carga, implementar frustum y verificar las rutas administrativas de importación y clonación. |
 
 ### 4. Gameplay — PARCIAL
 
-| Aspecto | Estado | Evidencia |
-| Combate 1.8: attack, LOS, críticos, knockback k=0.4/0.8 sprint; daño caída/vacío, regen, hardness | CUBIERTO | engine.rs:809-854, 925-1019, 1106; grid visibilidad 1020-1091; invuln 10 ticks engine.rs:164-180 |
-| Inventario de jugador de 45 casillas | CUBIERTO | inventory.rs y engine/windows.rs gestionan clic, shift, barra rápida, arrastre y recogida por doble clic |
-| Ventanas de mesa y horno | PARCIAL | engine/windows.rs recoge de las casillas visibles. Siguen pendientes yunque, encantamiento, dispensador y los intercambios numéricos en casillas propias de la mesa o el horno. |
-| Crafting 9 recetas + furnace | CUBIERTO | crafting.rs:164-220 — sin enchant/anvil/brewing |
-| Redstone: dust, repeaters, doors, gates, pistons ≤12, levers; budget 512 updates/tick | PARCIAL | redstone.rs:36-130 — sin comparadores |
-| Comandos ~30 + tab completion, op por UUID | CUBIERTO (parcial vs ~40) | commands.rs:61-69, 526-559 |
-| Selectores @a/@e/@p/@r con filtros | CUBIERTO | selector.rs:32-158 |
-| Entidades no jugador | PARCIAL | `src/entities.rs` almacena objetos, orbes, flechas y mobs por mundo. `src/engine/entity_view.rs` difunde las entidades presentes en la arena. Quedan pendientes los mecanismos de juego que las crean. |
-| Permisos 0–4 granulares | FALTA | commands.rs:61-69 es op por UUID |
-
-### 5. Scripting — CUBIERTA (mínima)
-
-| Aspecto | Estado | Evidencia |
+| Aspecto | Evidencia | Pendiente |
 |---|---|---|
-| Sandbox Luau (TABLE\|STRING\|MATH, 4 MiB, interrupt 30ms/3ms) | CUBIERTO | scripts.rs:66-90 |
-| Hot reload 500 ms | CUBIERTO | scripts.rs:158-168 |
-| Host API: 1 handler de eventos, sin RW de mundo desde Lua | PARCIAL | scripts.rs:83-127 |
+| Combate y supervivencia | `Room::movement`, `Room::attack`, `Player::harm` y `Room::advance` contienen alcance, visión, críticos, knockback, caída, vacío y regeneración básica. | Raycast AABB con compensación de latencia, perfiles de knockback, bloqueo, daño ambiental, hambre y pociones. |
+| Inventario, crafting y redstone | T4.4 tiene prueba Rust y vectores TCP. `crafting.rs`, `engine/windows.rs` y `redstone.rs` contienen recetas, horno y propagación con presupuesto. | Paridad de recetas, transacciones, yunque, encantamientos, comparadores, hoppers y restantes mecanismos. |
+| Entidades | T1.1 y T1.2 tienen pruebas de capacidad, generaciones y difusión. La rotura en supervivencia entrega el bloque directamente al inventario. | Objetos recogibles, orbes, IA, búsqueda de caminos, comercio y dimensiones. |
+| Comandos y autorización | `commands::REGISTRY`, `allowed`, `Selector::resolve`. Niveles 0–4 y nodos por UUID. T5.1 comprueba la integración con SQL. | El selector @e solo recorre jugadores. El registro, el chat y los subcomandos de mundo cubren parte del encargo. |
+
+### 5. Scripting — PARCIAL
+
+| Aspecto | Evidencia | Pendiente |
+|---|---|---|
+| Luau y recarga | `Game::load`, `Game::event` y `Scripts::start` configuran sandbox, 4 MiB, límites temporales y revisión del archivo cada 500 ms. Dos clientes recibieron respuestas distintas al evento de entrada antes y después de editar el script, en el mismo proceso. | Medir latencias de recarga y comportamiento con carga. Probar límites de recursos y recuperación de errores. |
+| API del host | `Room::notify_script` y `Room::script_replies` conectan entrada, colocación, muerte y baja con mensajes, kit y modo de juego. | Lectura y edición autorizada del mundo, teletransporte, perfiles de knockback y modos de juego completos. |
 
 ### 6. Distribuido — PARCIAL
 
-| Aspecto | Estado | Evidencia |
+| Aspecto | Evidencia | Pendiente |
 |---|---|---|
-| Store autosave + flock | CUBIERTO | persistence.rs:18-76 |
-| sqlx AnyPool lease/claim + spool de disco | CUBIERTO | profiles.rs:129-231 |
-| Métricas counters + histograma 11 buckets, /metrics /health | CUBIERTO | metrics.rs:32-74 |
-| Seed persistente, rechazo de listeners públicos sin forwarding | CUBIERTO | config.rs:88-116, 59-61 |
-| Forwarding HMAC Coral47/1 + replay nonce | CUBIERTO | identity.rs:40-99 |
-| NATS chat bus + Redis heartbeat | CUBIERTO | mesh.rs:25, 49-51 |
+| Perfiles y persistencia | `profiles.rs` contiene SQLx, leases, checkpoints y spool. La admisión y la lectura de permisos se probaron contra SQLite. `persistence.rs` usa un escritor de regiones y bloqueo de archivo. | Verificar PostgreSQL, recuperación tras caída, rendimiento y backend ScyllaDB. |
+| Malla, proxy y cola | `mesh.rs` publica chat en NATS y heartbeat en Redis. La suite TCP ejercita forwarding firmado, rechazo de repetición y promoción de cola. | Ensayo con dos nodos y servicios reales, grupos, amigos, matchmaking, conmutación de backend y consumo de memoria en limbo. |
+| Métricas, orquestación y XDP | `metrics.rs` expone HTTP, histograma de duración y contadores de bytes y caché. `linux/coral_xdp.c` contiene el filtro SYN. | Métrica de entidades activas, control plane gRPC y validación de XDP en una NIC Linux. |
 
-Extras verificados: coral_xdp.c (token bucket SYN v4+v6, LRU per-CPU 16384, ~40 SYN/s @ dport 25565), tools/rust_mcp.py, setup-linux.sh, tests/protocol47.py (3 pruebas: transfer 82, promoción de cola 120, forwarding firmado 133), benches/transport.rs (criterion).
+**Falta implementación** de I/O por núcleo (T3.1–T3.2), MapChunkBulk (T2.2), drops y orbes (T1.3–T1.4), IA y comercio (T4.3/T4.5), API Luau de mundo (T5.4), control plane y ScyllaDB (T6.1–T6.2). Los ensayos Linux, multinodo y de carga son verificaciones adicionales. La evidencia de esta revisión fue `cargo check --workspace`, Clippy con advertencias como errores, nextest 8/8, TCP 5/5 y las comprobaciones locales de Anvil y recarga Luau descritas arriba.
 
 Higiene: repositorio Git local inicializado. La instantánea original de 36 archivos está en `main` (commit `02d8688`).
 
@@ -99,14 +85,14 @@ Orden: núcleo de memoria/ECS y Protocolo 47 antes que comandos y orquestación.
 
 ### Fase 2 — Protocolo 47: chunks y culling
 
-- [ ] **T2.1** Contenedores paletted + meshing de columnas: reemplazar el u16-por-bloque de `Column::packet` (arena.rs:89-100) por paletted sections con varint-packed block storage, comprimidas con el pool libdeflate existente (network.rs:390-423).
+- [x] **T2.1** Paleta e índices empaquetados en disco y RAM ya presentes. La columna en red conserva el formato 1.8. La medición de rendimiento de arena sigue pendiente.
 - [ ] **T2.2** MapChunkBulk: agrupar columnas contiguas en un solo paquete 0x26 con continuación bitmask.
 - [ ] **T2.3** Culling de entidades: frustum + occlusion por ray-marching de voxeles para suprimir packets de entidad fuera de vista; throttle adaptativo 20 Hz <16 bloques / 5–10 Hz >48 (usando el grid engine.rs:1020-1091).
 
 ### Fase 3 — Runtime thread-per-core
 
 - [ ] **T3.1** Pinning del hilo de I/O con core_affinity + canales SPSC crossbeam entre I/O y sim (main.rs:83-91, engine.rs:299-303).
-- [ ] **T3.2** Dedicar un hilo por conexión con buffers BytesMut reutilizados, eliminando el reparto del LocalSet.
+- [ ] **T3.2** Repartir las conexiones entre los bucles de I/O por núcleo y reutilizar los buffers por conexión.
 
 ### Fase 4 — Gameplay
 
@@ -120,15 +106,15 @@ Orden: núcleo de memoria/ECS y Protocolo 47 antes que comandos y orquestación.
 
 ### Fase 5 — Comandos y permisos
 
-- [ ] **T5.1** Permisos 0–4 granulares reemplazando el check de UUID (commands.rs:61-69), integrado con profiles.rs.
-- [ ] **T5.2** Comandos faltantes (~10): give, clear, effect, enchant, xp, spawnpoint, setblock, fill, clone, testfor(block), blockdata, playsound, particle, gamerule, weather, save-all, ban/pardon, scoreboard/team, tellraw, execute, spreadplayers, worldborder. Selector.rs ya resuelve @a/@e/@p/@r.
+- [x] **T5.1** Al reclamar el perfil se leen nivel y nodos de `coral_permissions(uuid,level,nodes)` en la misma transacción. Los nodos son una lista JSON. Los permisos SQL y de configuración son aditivos y se aplican al ejecutar, pedir ayuda o completar comandos. Las modificaciones SQL entran en vigor en el siguiente login; el autosave solo escribe datos de juego. Se verificaron nivel 1, un nodo de nivel 2 y el rechazo de otro comando de ese mismo nivel por TCP.
+- [ ] **T5.2** Completar los comandos ausentes del registro, incluidos effect, enchant, blockdata, gamerule, defaultgamemode, stop, ban/pardon, execute, spreadplayers, worldborder y debug; ampliar scoreboard y team.
 - [ ] **T5.3** Comandos de mundo /world load|unload|import|clone|tp sobre el Manager (engine.rs:203-348).
 - [ ] **T5.4** Host API Luau con RW de mundo (setblock/getblock/tp) usando la misma autoridad que comandos.
 
 ### Fase 6 — Distribuido y orquestación
 
 - [ ] **T6.1** Control plane gRPC para Agones/Nomad (spin up/down <50 ms), sobre metrics.rs /health.
-- [ ] **T6.2** Write-behind ScyllaDB (sqlx) para perfiles masivos, manteniendo lease/claim de profiles.rs:129-231.
+- [ ] **T6.2** Write-behind ScyllaDB con un driver compatible para perfiles masivos, manteniendo lease/claim de profiles.rs:129-231.
 - [ ] **T6.3** Tooling de attach eBPF/XDP + tests de línea (coral_xdp.c ya filtra SYN; falta carga/attach/documentado en setup).
 - [ ] **T6.4** Capa edge proxy/limbo: compat de forwarding con firmas criptográficas (identity.rs Coral47/1 ya existe) y routing a limbo <0.2 MB/jugador.
 

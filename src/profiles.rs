@@ -61,6 +61,8 @@ pub struct Profiles {
     tx: mpsc::Sender<Message>,
 }
 pub struct Lease {
+    pub(crate) level: u8,
+    pub(crate) nodes: Vec<String>,
     uuid: Uuid,
     owner: Uuid,
     seq: i64,
@@ -112,6 +114,9 @@ impl Profiles {
             .map_err(io::Error::other)?;
         sqlx::query("CREATE TABLE IF NOT EXISTS coral_profiles (uuid TEXT PRIMARY KEY, owner TEXT NOT NULL, expires BIGINT NOT NULL, seq BIGINT NOT NULL, data TEXT NOT NULL)")
             .execute(&pool).await.map_err(io::Error::other)?;
+        // Managed by the operator. Gameplay checkpoints never write these grants.
+        sqlx::query("CREATE TABLE IF NOT EXISTS coral_permissions (uuid TEXT PRIMARY KEY, level BIGINT NOT NULL DEFAULT 0 CHECK (level BETWEEN 0 AND 4), nodes TEXT NOT NULL DEFAULT '[]')")
+            .execute(&pool).await.map_err(io::Error::other)?;
         let spool = dir.join("profile-recovery");
         tokio::fs::create_dir_all(&spool).await?;
         let mut files = tokio::fs::read_dir(&spool).await?;
@@ -136,6 +141,7 @@ impl Profiles {
         let owner = Uuid::new_v4();
         // The prior session owns the row until its final write or its lease expiry.
         for _ in 0..20 {
+            let mut transaction = self.pool.begin().await.map_err(io::Error::other)?;
             let ts = now();
             let row = sqlx::query(
                 "INSERT INTO coral_profiles(uuid,owner,expires,seq,data) VALUES($1,$2,$3,0,'{}')
@@ -146,7 +152,7 @@ impl Profiles {
             .bind(owner.to_string())
             .bind(ts + 90)
             .bind(ts)
-            .fetch_optional(&self.pool)
+            .fetch_optional(&mut *transaction)
             .await
             .map_err(io::Error::other)?;
             if let Some(row) = row {
@@ -154,8 +160,28 @@ impl Profiles {
                     row.try_get::<&str, _>("data").map_err(io::Error::other)?,
                 )?;
                 profile.validate()?;
+                let grants = sqlx::query("SELECT level,nodes FROM coral_permissions WHERE uuid=$1")
+                    .bind(uuid.to_string())
+                    .fetch_optional(&mut *transaction)
+                    .await
+                    .map_err(io::Error::other)?;
+                let (level, nodes) = match grants {
+                    Some(row) => {
+                        let level: i64 = row.try_get("level").map_err(io::Error::other)?;
+                        if !(0..=4).contains(&level) {
+                            return Err(invalid("invalid profile permission level"));
+                        }
+                        let nodes =
+                            serde_json::from_str(row.try_get("nodes").map_err(io::Error::other)?)?;
+                        (level as u8, nodes)
+                    }
+                    None => (0, Vec::new()),
+                };
+                transaction.commit().await.map_err(io::Error::other)?;
                 return Ok((
                     Lease {
+                        level,
+                        nodes,
                         uuid,
                         owner,
                         seq: 0,
@@ -165,6 +191,7 @@ impl Profiles {
                     profile,
                 ));
             }
+            transaction.rollback().await.map_err(io::Error::other)?;
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         Err(invalid("profile is active on another session"))

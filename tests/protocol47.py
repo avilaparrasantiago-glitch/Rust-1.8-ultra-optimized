@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import sqlite3
 import struct
 import subprocess
 import tempfile
@@ -120,7 +121,7 @@ class Client:
 
 
 @contextlib.contextmanager
-def server(**overrides):
+def server(prepare_db=None, **overrides):
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         port, metrics = free_port(), free_port()
@@ -149,6 +150,11 @@ def server(**overrides):
                             break
                     except OSError:
                         time.sleep(.04)
+                if prepare_db:
+                    db_path = tmp / ("profiles.sqlite" if os.name == "nt" else "data/profiles.sqlite")
+                    with contextlib.closing(sqlite3.connect(db_path)) as db:
+                        prepare_db(db)
+                        db.commit()
                 yield port, metrics
             finally:
                 proc.terminate()
@@ -156,6 +162,25 @@ def server(**overrides):
 
 
 class PlayTests(unittest.TestCase):
+    def test_profile_command_grants(self):
+        def grant(db):
+            uid = uuid.UUID(bytes=hashlib.md5(b"OfflinePlayer:Bob").digest(), version=3)
+            db.execute("INSERT INTO coral_permissions(uuid,level,nodes) VALUES(?,?,?)",
+                       (str(uid), 1, '["coral.command.give"]'))
+
+        with server(prepare_db=grant, operators={}) as (port, _):
+            b = self.client(port)
+            b.login("Bob")
+            b.confirm_pos()
+            b.chat("/say hello")
+            self.assertIn("hello", text_at(b.until(2))[0])
+            b.send(0x14, string("/giv") + b"\0")
+            self.assertEqual(b.until(0x3a), var(1) + string("/give"))
+            b.chat("/give Bob 1")
+            self.assertEqual(b.until(0x2f), bytes.fromhex("00 0009 0001 01 0000 00"))
+            b.chat("/seed")
+            self.assertIn("Permission denied", text_at(b.until(2))[0])
+
     def client(self, port, state=2, host="localhost"):
         c = Client(port, state, host)
         self.addCleanup(c.s.close)

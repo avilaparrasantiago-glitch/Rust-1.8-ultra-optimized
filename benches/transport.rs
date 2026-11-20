@@ -16,5 +16,19 @@ fn measure(c:&mut Criterion){
     c.bench_function("arena/read_zstd_81_columns",|b|b.iter(||black_box(Template::load(&path).unwrap())));
     c.bench_function("arena/instantiate_warm_template",|b|b.iter(||black_box(coral_engine::arena::World::new("match".into(),template.clone()))));
 }
-criterion_group!(benches,measure);
+fn chunk_packets(c: &mut Criterion) {
+    c.bench_function("chunk/first_packet", |b| {
+        b.iter_batched_ref(
+            || Template::flat(0),
+            |template| black_box(template.packet((0, 0)).unwrap()),
+            criterion::BatchSize::SmallInput,
+        )
+    });
+    let template = Template::flat(0);
+    template.packet((0, 0)).unwrap();
+    c.bench_function("chunk/cached_packet", |b| {
+        b.iter(|| black_box(template.packet((0, 0)).unwrap()))
+    });
+}
+criterion_group!(benches,measure,chunk_packets);
 criterion_main!(benches);

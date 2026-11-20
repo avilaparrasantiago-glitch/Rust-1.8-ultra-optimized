@@ -4,6 +4,7 @@ mod commands;
 pub mod config;
 pub mod crafting;
 pub mod engine;
+pub mod entities;
 pub mod identity;
 pub mod input;
 pub mod inventory;

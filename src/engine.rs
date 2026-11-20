@@ -1,7 +1,10 @@
+mod drops;
+mod entity_visibility;
 mod windows;
 use crate::{
-    arena::{BlockPos, ColumnPos, Template, World},
+    arena::{BlockPos, ColumnPos, Template, World, column},
     config::{Config, valid_world},
+    entities::EntityArena,
     identity::Identity,
     input::Action,
     inventory::Inventory,
@@ -24,6 +27,8 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
+
+const ENTITIES_PER_ROOM: usize = 1024;
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Window {
@@ -62,6 +67,7 @@ pub struct Player {
     pending_cols: Vec<ColumnPos>,
     center: Option<ColumnPos>,
     seen: HashMap<i32, u64>,
+    seen_entities: entity_visibility::Seen,
     revision: u64,
     moved_tick: f64,
     previous: [f64; 3],
@@ -107,6 +113,7 @@ impl Player {
             pending_cols: Vec::new(),
             center: None,
             seen: HashMap::new(),
+            seen_entities: entity_visibility::empty_seen(),
             revision: 1,
             moved_tick: 0.,
             previous: [0.; 3],
@@ -313,6 +320,7 @@ impl Manager {
                     mgr,
                     local,
                     players: Vec::new(),
+                    entities: EntityArena::with_capacity(ENTITIES_PER_ROOM),
                     tick: 0,
                     signs: HashMap::new(),
                     time: 0,
@@ -353,6 +361,7 @@ pub struct Room {
     pub mgr: Arc<Manager>,
     local: Arc<Lane>,
     pub players: Vec<Player>,
+    entities: EntityArena,
     tick: u64,
     circuit: crate::redstone::Circuit,
     changed: Vec<(BlockPos, u16)>,
@@ -367,9 +376,6 @@ pub struct Room {
 }
 pub fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
     (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)
-}
-fn column(pos: [f64; 3]) -> ColumnPos {
-    (pos[0].floor() as i32 >> 4, pos[2].floor() as i32 >> 4)
 }
 impl Room {
     fn run(&mut self, rx: Receiver<(Box<Player>, bool)>) {
@@ -437,6 +443,8 @@ impl Room {
                 self.advance(i);
                 i += 1;
             }
+            self.entities.tick();
+            drops::collect_drops(&mut self.entities, &mut self.players);
             self.circuit
                 .step(&mut self.world, self.tick, &mut self.changed);
             for &(pos, state) in &self.changed {
@@ -509,9 +517,13 @@ impl Room {
         player.loaded.clear();
         player.pending_cols.clear();
         player.seen.clear();
+        player.seen_entities.clear();
         player.center = None;
         player.spawn = spawn;
         player.send(p::spawn_point(spawn));
+        if player.xp > 0 {
+            player.send_xp();
+        }
         player.send(p::abilities(player.mode, player.flying));
         player.send(p::health(player.hp, 20, 5.));
         player.send(p::game_state(if self.weather { 1 } else { 2 }, 0.));
@@ -775,6 +787,7 @@ impl Room {
                     a.send(p::health(20., 20, 5.));
                     a.loaded.clear();
                     a.seen.clear();
+                    a.seen_entities.clear();
                     a.teleport(a.spawn);
                 }
             }
@@ -808,7 +821,7 @@ impl Room {
             }
             Action::Dig(status, pos) => {
                 let a = &mut self.players[i];
-                if !matches!(a.mode, 0 | 1) || !reachable(a, pos) {
+                if a.hp <= 0. || !matches!(a.mode, 0 | 1) || !reachable(a, pos) {
                     return None;
                 }
                 let before = self.world.block(pos);
@@ -837,19 +850,8 @@ impl Room {
                     }
                 };
                 if complete {
-                    if a.mode == 0
-                        && a.inv.add(Stack {
-                            id: if id == 2 { 3 } else { id as i16 },
-                            count: 1,
-                            damage: (before & 15) as i16,
-                        })
-                    {
-                        for (j, s) in a.inv.slots.iter().enumerate().skip(9) {
-                            a.send(p::slot(0, j as i16, *s));
-                        }
-                    }
-                    let _ = self.set_block(pos, 0);
-                    self.broadcast(p::effect(2001, pos, i32::from(before)));
+                    let survival = a.mode == 0;
+                    self.break_block(i, pos, before, survival);
                 }
             }
             Action::Place(pos, face) => {
@@ -1007,6 +1009,7 @@ impl Room {
             let dead = b.hp == 0.;
             self.players[i].sprint = false;
             if dead {
+                drops::drop_xp(&mut self.entities, &mut self.players[j]);
                 self.players[i].kills += 1;
                 self.notify_script(i, "kill", 0);
                 self.notify_script(j, "death", 0);
@@ -1024,6 +1027,7 @@ impl Room {
         for (i, p) in self.players.iter().enumerate() {
             self.grid.entry(column(p.pos)).or_default().push(i);
         }
+        entity_visibility::broadcast(&self.entities, &self.grid, &mut self.players);
         for i in 0..self.players.len() {
             let viewer = &self.players[i];
             let c = column(viewer.pos);

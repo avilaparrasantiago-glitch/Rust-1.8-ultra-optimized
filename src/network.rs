@@ -308,7 +308,11 @@ async fn session(
     )
     .await?;
     drop(handshake_permit);
-    let id = net.manager.next.fetch_add(1, Relaxed);
+    let id = net
+        .manager
+        .next
+        .try_update(Relaxed, Relaxed, |id| id.checked_add(1))
+        .map_err(|_| invalid("player ID space exhausted"))?;
     let (permit, in_limbo) = match net.gate.clone().try_acquire_owned() {
         Ok(p) => (p, false),
         Err(_) => {

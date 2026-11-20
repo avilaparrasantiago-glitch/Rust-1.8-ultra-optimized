@@ -101,13 +101,17 @@ Orden: núcleo de memoria/ECS y Protocolo 47 antes que comandos y orquestación.
 
 ### Fase 2 — Protocolo 47: chunks y culling
 
-- [ ] **T2.1** Optimizar la expansión de las paletas internas de `Section` al serializar columnas. Conservar el formato u16 little-endian de Protocolo 47 y verificar los bytes con un vector independiente. Medir la primera serialización y la lectura desde caché.
+- [x] **T2.1** Optimizar la expansión de las paletas internas de `Section` al serializar columnas. Conservar el formato u16 little-endian de Protocolo 47 y verificar los bytes con un vector independiente. Medir la primera serialización y la lectura desde caché.
 - [ ] **T2.2** MapChunkBulk: agrupar columnas contiguas en un solo paquete 0x26 con continuación bitmask.
 - [ ] **T2.3** Culling de entidades: frustum + occlusion por ray-marching de voxeles para suprimir packets de entidad fuera de vista; throttle adaptativo 20 Hz <16 bloques / 5–10 Hz >48 (usando el grid engine.rs:1020-1091).
 
 - [ ] **T2.4a** Generador propio de Overworld normal al estilo de Java 1.8. Obtener relieve, costas, océanos, ríos y biomas a partir de la semilla guardada. Comprobar continuidad de chunks, incluidas coordenadas negativas, y reproducibilidad con distinto orden de carga.
 - [ ] **T2.4b** Poblar el terreno con cuevas, minerales, vegetación y estructuras según el bioma. Verificar las formaciones que cruzan chunks y un punto de aparición transitable.
 - [ ] **T2.4c** Integrar la generación bajo demanda con carga, caché y persistencia de ediciones. Medir tiempo por chunk en frío y desde caché, memoria y p99 de tick durante la exploración con varios jugadores.
+
+**Criterios de aceptación de T2.4.** Usar la semilla persistente y comprobar con clientes Java 1.8.8/1.8.9 que el terreno normal se puede explorar, editar y volver a cargar. Generar columnas fuera del hilo de simulación, priorizar las que necesita el jugador y cancelar solicitudes obsoletas al teletransportarse o salir. Acotar las colas y la caché para que explorar terreno nuevo tenga un coste de memoria controlado.
+
+Contrastar los resultados con [ARCHITECTURE.md](ARCHITECTURE.md). Durante exploración simultánea y teletransportes, registrar TPS, p99 y número de ticks que superan el presupuesto de 50 ms, memoria por jugador activo (objetivo aproximado de 1,5–3 MB) y jugadores por núcleo físico. Verificar cero E/S de disco bloqueante en el hilo de simulación y medir asignaciones tras el calentamiento en serialización y física. Medir por separado generación en frío, acceso desde caché e instanciación de arenas efímeras desde RAM. Para estas arenas aplican el objetivo de instanciación inferior a 2 ms y el límite de 150 MB por mundo de minijuego cargado. Publicar hardware, perfil de compilación, semilla, distancia de visión y carga utilizada junto con los resultados.
 
 ### Fase 3 — Runtime thread-per-core
 
@@ -140,7 +144,7 @@ Orden: núcleo de memoria/ECS y Protocolo 47 antes que comandos y orquestación.
 
 ## Siguiente bloque
 
-**T2.1** — Optimizar la serialización de columnas y comparar los bytes con vectores independientes de Protocolo 47.
+**T2.2** — Agrupar columnas en paquetes MapChunkBulk (0x26) y verificar la recepción mediante Protocolo 47.
 
 La prueba de engine/entity_visibility.rs cubre paquetes compartidos, columnas descargadas y reutilización de slots. Los vectores de aparición siguen el esquema 1.8 de PrismarineJS. La generación de entidades durante el juego corresponde a los bloques siguientes.
 
@@ -149,3 +153,7 @@ T1.3 se verificó con rotura de hierba, aparición de tierra, recogida por AABB 
 T1.4 se verificó con dos clientes TCP: baja PvP, aparición y movimiento del orbe, recogida, actualización de XP y retirada de la entidad. El orbe transfiere siete puntos por nivel de la víctima hasta un máximo de cien. La víctima conserva el resto.
 
 Última verificación de T1.4 en Windows GNU con Rust 1.100.0 y Nextest 0.9.150. Pasaron `cargo check --workspace --locked`, `cargo clippy --workspace -- -D warnings`, `cargo nextest run --workspace --locked` (6 pruebas) y `tests/protocol47.py` (5 pruebas TCP).
+
+T2.1 — src/arena.rs expande secuencialmente los índices de 0 a 12 bits por bloque y reserva el paquete completo antes de escribirlo. El test TCP compara bloques, luz y biomas de una columna plana con un vector independiente. En 1.024 lecturas de una columna ya serializada, el contador de asignaciones registró cero. Pasaron check, Clippy, 8 pruebas de Nextest y 5 pruebas TCP.
+
+Medición T2.1 con Criterion 0.5.1 sobre Windows GNU, Intel Core i3-1005G1, Rust 1.100.0, perfil dev con símbolos y opt-level 3 para el paquete principal. Columna plana de una sección, ambos binarios ejecutados consecutivamente, un hilo de análisis, 1 s de calentamiento, 3 s de medición, 30 muestras. La primera serialización pasó de 31,87 µs (IC 95 % 31,14–32,84) a 13,33 µs (12,85–13,79). En caché pasó de 24,69 ns (24,15–25,48) a 24,33 ns (24,21–24,44). En mediciones separadas de 20 muestras, leer y descomprimir una plantilla de 81 columnas tardó 530,35 µs con el archivo en caché del sistema, y construir World con la plantilla en RAM tardó 153,06 ns. El perfil de CPU de 4 s se capturó con flamegraph a 99 Hz; el backend de Windows mostró direcciones sin resolver. Estas cifras corresponden al microbenchmark de serialización y no miden los TPS del servidor bajo carga.

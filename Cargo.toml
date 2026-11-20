@@ -24,6 +24,7 @@ futures-util = "0.3"
 md-5 = "0.10"
 mlua = { version = "0.11", features = ["luau", "vendored", "send"] }
 libdeflater = "1"
+percent-encoding = "2"
 rayon = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

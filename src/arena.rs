@@ -12,6 +12,10 @@ const MAX_TEMPLATE: usize = 64 << 20;
 pub type ColumnPos = (i32, i32);
 pub type BlockPos = (i32, u8, i32);
 
+pub(crate) fn column(pos: [f64; 3]) -> ColumnPos {
+    (pos[0].floor() as i32 >> 4, pos[2].floor() as i32 >> 4)
+}
+
 #[derive(Clone)]
 pub(crate) struct Section {
     pub(crate) palette: Vec<u16>,
@@ -31,6 +35,40 @@ impl Section {
         }
         self.palette[((word >> (bit % 8)) & ((1 << width) - 1)) as usize]
     }
+    fn write_states(&self, dst: &mut BytesMut) {
+        let start = dst.len();
+        dst.resize(start + 8192, 0);
+        let output = &mut dst[start..];
+        let width = self.bits();
+        if width == 0 {
+            let state = self.palette[0].to_le_bytes();
+            if state != [0, 0] {
+                for block in output.as_chunks_mut::<2>().0 {
+                    *block = state;
+                }
+            }
+            return;
+        }
+
+        let mask = (1u32 << width) - 1;
+        let mut bytes = self.indices.iter();
+        let mut word = 0u32;
+        let mut available = 0;
+        for block in output.as_chunks_mut::<2>().0 {
+            while available < width {
+                // Section loading validates a packed length of 512 * width.
+                let Some(&byte) = bytes.next() else {
+                    unreachable!("validated section length")
+                };
+                word |= u32::from(byte) << available;
+                available += 8;
+            }
+            *block = self.palette[(word & mask) as usize].to_le_bytes();
+            word >>= width;
+            available -= width;
+        }
+    }
+
     fn read(r: &mut Cursor<'_>) -> io::Result<Self> {
         let n = r.short()? as usize;
         if !(1..=4096).contains(&n) {
@@ -80,17 +118,16 @@ impl Column {
     fn packet(&self, (x, z): ColumnPos) -> Packet {
         self.packet
             .get_or_init(|| {
-                Packet::new(0x21, |w| {
+                let payload_len = self.sections.len() * 12288 + 256;
+                Packet::with_capacity(0x21, payload_len + 15, |w| {
                     w.put_i32(x);
                     w.put_i32(z);
                     w.put_u8(1);
                     let mask = self.sections.keys().fold(0u16, |m, y| m | (1 << *y));
                     w.put_u16(mask);
-                    w.var((self.sections.len() * 12288 + 256) as i32);
+                    w.var(payload_len as i32);
                     for s in self.sections.values() {
-                        for i in 0..4096 {
-                            w.put_u16_le(s.state(i));
-                        }
+                        s.write_states(w);
                     }
                     for plane in 0..2 {
                         for s in self.sections.values() {
@@ -304,5 +341,40 @@ impl World {
             edits.entry(col).or_default().insert(p, state);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn section_wire_bytes_match_all_palette_widths() {
+        for width in 0..=12 {
+            let n = if width < 2 {
+                1 << width
+            } else {
+                (1 << width) - 1
+            };
+            let palette: Vec<u16> = (0..n).map(|v| (v as u16).wrapping_mul(311)).collect();
+            let mut indices = vec![0u8; 512 * width];
+            let mut expected = Vec::new();
+            for i in 0..4096 {
+                let index = (i * 199 + 13) % n;
+                expected.extend_from_slice(&palette[index].to_le_bytes());
+                for bit in 0..width {
+                    let offset = i * width + bit;
+                    indices[offset / 8] |= (((index >> bit) & 1) << (offset % 8)) as u8;
+                }
+            }
+            let section = Section {
+                palette,
+                indices,
+                light: None,
+            };
+            let mut actual = BytesMut::new();
+            section.write_states(&mut actual);
+            assert_eq!(actual.as_ref(), expected, "width {width}");
+        }
     }
 }

@@ -313,6 +313,7 @@ impl Manager {
                     mgr,
                     local,
                     players: Vec::new(),
+                    entities: crate::entities::EntityArena::with_capacity(4096),
                     tick: 0,
                     signs: HashMap::new(),
                     time: 0,
@@ -353,6 +354,7 @@ pub struct Room {
     pub mgr: Arc<Manager>,
     local: Arc<Lane>,
     pub players: Vec<Player>,
+    pub entities: crate::entities::EntityArena,
     tick: u64,
     circuit: crate::redstone::Circuit,
     changed: Vec<(BlockPos, u16)>,
@@ -437,6 +439,7 @@ impl Room {
                 self.advance(i);
                 i += 1;
             }
+            self.entities.tick();
             self.circuit
                 .step(&mut self.world, self.tick, &mut self.changed);
             for &(pos, state) in &self.changed {

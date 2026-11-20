@@ -49,7 +49,7 @@ Verificado leyendo los 22 módulos de `src/` (5.947 líneas). Clasificación: CU
 | Redstone: dust, repeaters, doors, gates, pistons ≤12, levers; budget 512 updates/tick | PARCIAL | redstone.rs:36-130 — sin comparadores |
 | Comandos ~30 + tab completion, op por UUID | CUBIERTO (parcial vs ~40) | commands.rs:61-69, 526-559 |
 | Selectores @a/@e/@p/@r con filtros | CUBIERTO | selector.rs:32-158 |
-| Entidades no-jugador (items, XP orbs, flechas, mobs) | FALTA | solo jugadores en el ECS |
+| Entidades no jugador | PARCIAL | `src/entities.rs` almacena objetos, orbes, flechas y mobs por mundo. Quedan pendientes su aparición en el juego y la difusión a clientes. |
 | Permisos 0–4 granulares | FALTA | commands.rs:61-69 es op por UUID |
 
 ### 5. Scripting — CUBIERTA (mínima)
@@ -89,7 +89,8 @@ Orden: núcleo de memoria/ECS y Protocolo 47 antes que comandos y orquestación.
 
 ### Fase 1 — Núcleo de memoria/ECS
 
-- [ ] **T1.1** Arena generacional de entidades no-jugador: nuevo `src/entities.rs` con slots generacionales (gen+index) sobre Vec denso, tipos Item/Orb/Arrow/Mob reutilizando el estilo del grid de visibilidad (engine.rs:1020-1091). Tick de entidades integrado al loop engine.rs:375-492 sin alloc en heap.
+- [x] **T1.1** Cada `Room` reserva 4096 plazas antes de arrancar su bucle. `EntityArena` en `src/entities.rs` mantiene las entidades activas contiguas, reutiliza las plazas liberadas y rechaza identificadores caducados. `Room::run` avanza la edad y la posición una vez por tick.
+  - `tests/entities.rs` verifica los cuatro tipos, el límite de capacidad, la retirada con compactación y la reutilización de identificadores. En Windows x64, con 4096 entidades y tras un tick de calentamiento, 200 ciclos de retirada, inserción y tick registraron cero asignaciones en el hilo de la prueba. Cargo check y Clippy limpios, nextest 4/4.
 - [ ] **T1.2** Broadcast de spawn/move/destroy de entidades vía el zero-copy `Packet(Arc<Shared>)` (wire.rs:199-233) respetando el grid de visibilidad.
 - [ ] **T1.3** Drops de items al romper bloque + pickup por AABB (reutilizar física de engine.rs:925-973).
 - [ ] **T1.4** Orbes de XP (spawn al matar, imán, recoger) sobre la misma arena.
@@ -133,4 +134,4 @@ Orden: núcleo de memoria/ECS y Protocolo 47 antes que comandos y orquestación.
 
 ## Siguiente bloque
 
-**T1.1** — Crear la arena generacional de entidades no jugador en `src/entities.rs` e integrarla en `Room::run` (`src/engine.rs:375`). Comprobar que un identificador caducado no accede a un slot reutilizado y medir las asignaciones del tick de entidades tras el calentamiento. La difusión de spawn, movimiento y destrucción corresponde a T1.2.
+**T1.2** — Integrar las entidades de cada arena con la visibilidad por jugador y difundir su aparición, movimiento y retirada mediante paquetes compartidos de Protocolo 47.

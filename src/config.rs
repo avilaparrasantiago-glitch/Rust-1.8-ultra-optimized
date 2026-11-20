@@ -8,6 +8,14 @@ use std::{
 };
 use uuid::Uuid;
 
+#[derive(Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Terrain {
+    #[default]
+    Flat,
+    Normal,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -18,6 +26,8 @@ pub struct Config {
     pub worlds: Vec<String>,
     pub persistent_worlds: Vec<String>,
     pub scripts: BTreeMap<String, PathBuf>,
+    #[serde(default)] // Older config files describe flat worlds.
+    pub terrain: Terrain,
     pub arena_file: Option<PathBuf>,
     pub data_dir: PathBuf,
     pub motd: String,
@@ -38,6 +48,7 @@ impl Default for Config {
             max_players: 128,
             view_distance: 3,
             worlds: vec!["lobby".into(), "arena".into()],
+            terrain: Terrain::Normal,
             arena_file: None,
             data_dir: "data".into(),
             motd: "Coral Ã‚Â· Protocol 47".into(),
@@ -113,4 +124,18 @@ pub fn persistent_seed(dir: &Path) -> io::Result<i64> {
         .trim()
         .parse()
         .map_err(|_| invalid("invalid persisted seed"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terrain_defaults_preserve_existing_configurations() {
+        assert!(matches!(Config::default().terrain, Terrain::Normal));
+        assert!(matches!(
+            serde_json::from_str::<Config>("{}").unwrap().terrain,
+            Terrain::Flat
+        ));
+    }
 }

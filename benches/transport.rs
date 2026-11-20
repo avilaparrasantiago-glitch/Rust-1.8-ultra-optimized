@@ -30,5 +30,10 @@ fn chunk_packets(c: &mut Criterion) {
         b.iter(|| black_box(template.packet((0, 0)).unwrap()))
     });
 }
-criterion_group!(benches,measure,chunk_packets);
+fn normal_generation(c: &mut Criterion) {
+    c.bench_function("terrain/normal_9_columns", |b| {
+        b.iter(|| black_box(Template::normal(9581, 1)))
+    });
+}
+criterion_group!(benches,measure,chunk_packets,normal_generation);
 criterion_main!(benches);

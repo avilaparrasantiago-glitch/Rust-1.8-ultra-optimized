@@ -272,6 +272,24 @@ class PlayTests(unittest.TestCase):
             a.send(5, struct.pack(">ffB", 180., 0., 1))
             self.assertEqual(number(a.until(0x0c))[0], peer)
 
+    def test_normal_terrain_login_and_surface(self):
+        with server(arena_file=None, terrain="normal") as (port, _):
+            a = self.client(port)
+            a.login("Alice")
+            pos = a.until(8)
+            x, y, z = struct.unpack(">ddd", pos[:24])
+            self.assertEqual((x, z), (.5, .5))
+            self.assertGreater(y, 63)
+            a.send(6, pos[:32] + b"\1")
+            bulk = a.until(0x26)
+            cx, cz, mask = struct.unpack_from(">iiH", bulk, 2)
+            self.assertEqual((cx, cz), (0, 0))
+            self.assertTrue(mask & (1 << (int(y - 1) >> 4)))
+            blocks = 22  # sky flag, count, then two column headers
+            surface = struct.unpack_from("<H", bulk, blocks + (int(y) - 1) * 512)[0]
+            self.assertIn(surface >> 4, (2, 12))
+            self.assertEqual(struct.unpack_from("<H", bulk, blocks)[0], 7 << 4)
+
     def test_queue_promotion(self):
         with server(max_players=1) as (port, _):
             a = self.client(port)

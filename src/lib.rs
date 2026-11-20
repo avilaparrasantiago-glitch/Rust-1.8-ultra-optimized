@@ -18,3 +18,4 @@ mod redstone;
 mod scripts;
 mod selector;
 pub mod wire;
+mod terrain;

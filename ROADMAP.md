@@ -105,7 +105,7 @@ Orden: núcleo de memoria/ECS y Protocolo 47 antes que comandos y orquestación.
 - [x] **T2.2** MapChunkBulk: agrupar columnas contiguas en un solo paquete 0x26 con continuación bitmask.
 - [x] **T2.3** Culling de entidades: frustum + occlusion por ray-marching de voxeles para suprimir packets de entidad fuera de vista; throttle adaptativo 20 Hz <16 bloques / 5–10 Hz >48 (usando el grid engine.rs:1020-1091).
 
-- [ ] **T2.4a** Generador propio de Overworld normal al estilo de Java 1.8. Obtener relieve, costas, océanos, ríos y biomas a partir de la semilla guardada. Comprobar continuidad de chunks, incluidas coordenadas negativas, y reproducibilidad con distinto orden de carga.
+- [x] **T2.4a** Generador propio de Overworld normal al estilo de Java 1.8. Obtener relieve, costas, océanos, ríos y biomas a partir de la semilla guardada. Comprobar continuidad de chunks, incluidas coordenadas negativas, y reproducibilidad con distinto orden de carga.
 - [ ] **T2.4b** Poblar el terreno con cuevas, minerales, vegetación y estructuras según el bioma. Verificar las formaciones que cruzan chunks y un punto de aparición transitable.
 - [ ] **T2.4c** Integrar la generación bajo demanda con carga, caché y persistencia de ediciones. Medir tiempo por chunk en frío y desde caché, memoria y p99 de tick durante la exploración con varios jugadores.
 
@@ -144,7 +144,7 @@ Contrastar los resultados con [ARCHITECTURE.md](ARCHITECTURE.md). Durante explor
 
 ## Siguiente bloque
 
-**T2.4a** — Generación propia de terreno normal de estilo Java 1.8 a partir de la semilla persistente.
+**T2.4b** — Añadir cuevas, minerales, vegetación y estructuras según el bioma, comprobar sus cruces entre chunks y mantener el punto de aparición transitable.
 
 La prueba de engine/entity_visibility.rs cubre paquetes compartidos, columnas descargadas y reutilización de slots. Los vectores de aparición siguen el esquema 1.8 de PrismarineJS. La generación de entidades durante el juego corresponde a los bloques siguientes.
 
@@ -161,3 +161,7 @@ Medición T2.1 con Criterion 0.5.1 sobre Windows GNU, Intel Core i3-1005G1, Rust
 T2.2 — Las dos columnas priorizadas del tick comparten un paquete 0x26 cuando son adyacentes; las demás usan 0x21. Cada sala reutiliza su último lote y envía los cambios de bloques y carteles después del terreno. En Windows GNU pasaron check, Clippy, nueve pruebas Rust y cinco TCP. La prueba de transferencia comprueba las dos cabeceras, el orden de los datos y los bytes del lote y de una columna individual.
 
 T2.3 — engine/entity_visibility.rs aplica una vista conservadora de 160 × 130 grados y hasta cinco rayos de prueba contra bloques sólidos a partir de 16 bloques. A 20 TPS, el intervalo de movimiento es de 1 tick cerca, 2 ticks desde 16 bloques y 4 ticks desde 48 bloques. En Windows GNU pasaron check, Clippy, diez pruebas Rust y seis pruebas TCP. La prueba con dos clientes comprueba la retirada de un jugador distante y su reaparición al girar la cámara. La reducción de tráfico bajo carga sigue pendiente de medición.
+
+T2.4a — src/terrain.rs genera el relieve de siete biomas a partir de coordenadas globales y de la semilla persistente. src/main.rs construye la zona inicial en paralelo antes de arrancar la simulación. Las pruebas comparan los paquetes al invertir el orden de generación, recorren bordes en ambos ejes con coordenadas negativas y comprueban el bloque bajo el jugador con un cliente TCP de protocolo 47. Pasaron cargo check, Clippy, 13 pruebas Rust y 7 pruebas TCP.
+
+Criterion midió 520,96 µs por lote de nueve chunks nuevos en memoria (IC 95 % de 479,78 a 582,22 µs). Semilla 9581, radio 1, dos hilos Rayon, Intel Core i3-1005G1, Windows GNU, Rust 1.100.0, perfil dev con símbolos y opt-level 3 para el paquete principal. Una vez terminadas las pruebas, se usó 1 s de calentamiento y 3 s de medición con 30 muestras. Se capturó además un perfil de CPU a 99 Hz durante 3 s. La carga bajo demanda, la caché y el p99 de tick durante exploración corresponden a T2.4c.

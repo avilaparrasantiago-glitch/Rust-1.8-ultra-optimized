@@ -1,6 +1,6 @@
 use coral_engine::{
     arena::Template,
-    config::{Config, persistent_seed},
+    config::{Config, Terrain, persistent_seed},
     engine::Manager,
     identity::Forwarding,
     network,
@@ -51,11 +51,15 @@ fn main() -> io::Result<()> {
             Forwarding::new(key.into_bytes())
         })
         .transpose()?;
+    let seed = persistent_seed(&cfg.data_dir)?;
+    let radius = i32::from(cfg.view_distance) + 1;
     let template = match &cfg.arena_file {
         Some(p) => Template::load(p)?,
-        None => Template::flat(i32::from(cfg.view_distance) + 1),
+        None => match cfg.terrain {
+            Terrain::Flat => Template::flat(radius),
+            Terrain::Normal => Template::normal(seed, radius),
+        },
     };
-    let seed = persistent_seed(&cfg.data_dir)?;
     let manager = Manager::new(cfg, template, seed)?;
     let run = async {
         let url = manager

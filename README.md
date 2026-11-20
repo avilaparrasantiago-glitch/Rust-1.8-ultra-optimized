@@ -56,3 +56,7 @@ Built from the ground up to eliminate JVM garbage collection pauses, lock conten
 git clone [https://github.com/avilaparrasantiago-glitch/Rust-1.8-Ultra-optimized.git](https://github.com/avilaparrasantiago-glitch/Rust-1.8-Ultra-optimized.git)
 cd Rust-1.8-Ultra-optimized
 cargo build --release
+
+## Normal Overworld terrain
+
+New configurations use the built-in seeded terrain generator. To select it in an existing JSON configuration, set `"terrain": "normal"` and omit `arena_file`. Existing configurations that omit `terrain` retain the flat template. An explicit arena file takes priority. The generator reads the seed from `data_dir/seed` and builds a square around spawn with a radius of `view_distance + 1` chunks at startup. Caves, vegetation, structures and generation during exploration are subsequent roadmap blocks.

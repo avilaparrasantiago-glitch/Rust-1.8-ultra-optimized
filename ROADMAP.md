@@ -109,6 +109,10 @@ Orden: núcleo de memoria/ECS y Protocolo 47 antes que comandos y orquestación.
 - [ ] **T2.4b** Poblar el terreno con cuevas, minerales, vegetación y estructuras según el bioma. Verificar las formaciones que cruzan chunks y un punto de aparición transitable.
 - [ ] **T2.4c** Integrar la generación bajo demanda con carga, caché y persistencia de ediciones. Medir tiempo por chunk en frío y desde caché, memoria y p99 de tick durante la exploración con varios jugadores.
 
+**Criterios de aceptación de T2.4.** Usar la semilla persistente y comprobar con clientes Java 1.8.8/1.8.9 que el terreno normal se puede explorar, editar y volver a cargar. Generar columnas fuera del hilo de simulación, priorizar las que necesita el jugador y cancelar solicitudes obsoletas al teletransportarse o salir. Acotar las colas y la caché para que explorar terreno nuevo tenga un coste de memoria controlado.
+
+Contrastar los resultados con [ARCHITECTURE.md](ARCHITECTURE.md). Durante exploración simultánea y teletransportes, registrar TPS, p99 y número de ticks que superan el presupuesto de 50 ms, memoria por jugador activo (objetivo aproximado de 1,5–3 MB) y jugadores por núcleo físico. Verificar cero E/S de disco bloqueante en el hilo de simulación y medir asignaciones tras el calentamiento en serialización y física. Medir por separado generación en frío, acceso desde caché e instanciación de arenas efímeras desde RAM. Para estas arenas aplican el objetivo de instanciación inferior a 2 ms y el límite de 150 MB por mundo de minijuego cargado. Publicar hardware, perfil de compilación, semilla, distancia de visión y carga utilizada junto con los resultados.
+
 ### Fase 3 — Runtime thread-per-core
 
 - [ ] **T3.1** Pinning del hilo de I/O con core_affinity + canales SPSC crossbeam entre I/O y sim (main.rs:83-91, engine.rs:299-303).

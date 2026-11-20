@@ -36,31 +36,9 @@ fn recycling_preserves_dense_survivors_and_rejects_stale_handles() {
     assert_eq!(arena.iter().count(), 0);
 }
 
-use std::{
-    alloc::{GlobalAlloc, Layout, System},
-    cell::Cell,
-};
-
-// Count only allocations on the simulation test thread, excluding the test harness.
-thread_local! {
-    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
-}
-
-struct CountingAllocator;
-
-unsafe impl GlobalAlloc for CountingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATIONS.with(|count| count.set(count.get().wrapping_add(1)));
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(ptr, layout) }
-    }
-}
-
-#[global_allocator]
-static ALLOCATOR: CountingAllocator = CountingAllocator;
+#[path = "support/allocations.rs"]
+mod allocations;
+use allocations::ALLOCATIONS;
 
 #[test]
 fn full_arena_ticks_and_recycles_without_allocating() {

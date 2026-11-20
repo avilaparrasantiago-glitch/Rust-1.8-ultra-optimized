@@ -308,7 +308,13 @@ async fn session(
     )
     .await?;
     drop(handshake_permit);
-    let id = net.manager.next.fetch_add(1, Relaxed);
+    let id = net
+        .manager
+        .next
+        .try_update(Relaxed, Relaxed, |n| {
+            (n < crate::engine::FIRST_ROOM_ENTITY).then(|| n + 1)
+        })
+        .map_err(|_| invalid("player entity IDs exhausted"))?;
     let (permit, in_limbo) = match net.gate.clone().try_acquire_owned() {
         Ok(p) => (p, false),
         Err(_) => {
@@ -344,7 +350,7 @@ async fn session(
     };
     let _permit = permit;
     let (actions, inbox) = crossbeam_channel::bounded(96);
-    let (out, mut packets) = mpsc::channel(192);
+    let (out, packets) = crossbeam_channel::bounded(192);
     eprintln!("{} joined from {}", identity.name, identity.ip);
     let (lease, profile) = match net.profiles.claim(identity.uuid).await {
         Ok(p) => p,
@@ -358,7 +364,7 @@ async fn session(
             return Ok(());
         }
     };
-    let mut player = Box::new(Player::new(id, identity, inbox, out));
+    let mut player = Box::new(Player::with_queue(id, identity, inbox, out));
     player.restore(lease, profile);
     if net
         .manager
@@ -400,7 +406,7 @@ async fn session(
             while batch.len() < 192 {
                 match packets.try_recv() {
                     Ok(p) => batch.push(p),
-                    Err(mpsc::error::TryRecvError::Empty) => break,
+                    Err(crossbeam_channel::TryRecvError::Empty) => break,
                     Err(_) => return Ok(()),
                 }
             }

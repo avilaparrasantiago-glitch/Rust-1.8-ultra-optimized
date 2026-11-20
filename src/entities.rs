@@ -3,7 +3,7 @@ use crate::packets::Stack;
 /// A handle is meaningful only in the arena that issued it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EntityId {
-    slot: usize,
+    pub(crate) slot: usize,
     generation: u64,
 }
 

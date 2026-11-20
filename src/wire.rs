@@ -199,7 +199,7 @@ pub fn frame(body: &[u8], threshold: Option<usize>) -> io::Result<Bytes> {
 #[derive(Clone)]
 pub struct Packet(Arc<Shared>);
 struct Shared {
-    body: Bytes,
+    body: BytesMut,
     encoded: [OnceLock<Bytes>; 2],
 }
 impl Packet {
@@ -208,12 +208,22 @@ impl Packet {
         body.var(id);
         fill(&mut body);
         Self(Arc::new(Shared {
-            body: body.freeze(),
+            body,
             encoded: Default::default(),
         }))
     }
     pub fn body(&self) -> &[u8] {
         &self.0.body
+    }
+    /// Reuse a reserved body only after all outbound queues release this version.
+    pub(crate) fn rewrite(&mut self, fill: impl FnOnce(&mut BytesMut)) -> bool {
+        let Some(shared) = Arc::get_mut(&mut self.0) else {
+            return false;
+        };
+        shared.body.clear();
+        shared.encoded = Default::default();
+        fill(&mut shared.body);
+        true
     }
     pub fn encoded(&self, threshold: usize) -> io::Result<Bytes> {
         let idx = match threshold {

@@ -1,3 +1,5 @@
+pub(crate) const FIRST_ROOM_ENTITY: i32 = 1 << 30;
+mod entity_view;
 mod windows;
 use crate::{
     arena::{BlockPos, ColumnPos, Template, World},
@@ -23,7 +25,6 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tokio::sync::mpsc;
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Window {
@@ -43,7 +44,7 @@ pub struct Player {
     pub team: String,
     pub inv: Inventory,
     pub input: Receiver<Action>,
-    output: mpsc::Sender<Packet>,
+    output: Outbox,
     failed: AtomicBool,
     pub ground: bool,
     pub flying: bool,
@@ -62,19 +63,52 @@ pub struct Player {
     pending_cols: Vec<ColumnPos>,
     center: Option<ColumnPos>,
     seen: HashMap<i32, u64>,
+    seen_entities: HashMap<usize, entity_view::Seen>,
     revision: u64,
     moved_tick: f64,
     previous: [f64; 3],
     pub kills: i32,
     pub deaths: i32,
 }
+enum Outbox {
+    Preallocated(Sender<Packet>),
+    Tokio(tokio::sync::mpsc::Sender<Packet>),
+}
+impl Outbox {
+    fn remaining(&self) -> usize {
+        match self {
+            Self::Preallocated(tx) => tx.capacity().unwrap_or(usize::MAX).saturating_sub(tx.len()),
+            Self::Tokio(tx) => tx.capacity(),
+        }
+    }
+    fn send(&self, packet: Packet, failed: &AtomicBool) {
+        let sent = match self {
+            Self::Preallocated(tx) => tx.try_send(packet).is_ok(),
+            Self::Tokio(tx) => tx.try_send(packet).is_ok(),
+        };
+        if !sent {
+            failed.store(true, Release);
+        }
+    }
+}
 impl Player {
     pub fn new(
         id: i32,
         identity: Identity,
         input: Receiver<Action>,
-        output: mpsc::Sender<Packet>,
+        output: tokio::sync::mpsc::Sender<Packet>,
     ) -> Self {
+        Self::with_output(id, identity, input, Outbox::Tokio(output))
+    }
+    pub(crate) fn with_queue(
+        id: i32,
+        identity: Identity,
+        input: Receiver<Action>,
+        output: Sender<Packet>,
+    ) -> Self {
+        Self::with_output(id, identity, input, Outbox::Preallocated(output))
+    }
+    fn with_output(id: i32, identity: Identity, input: Receiver<Action>, output: Outbox) -> Self {
         Self {
             lease: None,
             id,
@@ -107,6 +141,7 @@ impl Player {
             pending_cols: Vec::new(),
             center: None,
             seen: HashMap::new(),
+            seen_entities: HashMap::with_capacity(entity_view::CAPACITY),
             revision: 1,
             moved_tick: 0.,
             previous: [0.; 3],
@@ -144,9 +179,7 @@ impl Player {
         }
     }
     pub fn send(&self, p: Packet) {
-        if self.output.try_send(p).is_err() {
-            self.failed.store(true, Release);
-        }
+        self.output.send(p, &self.failed);
     }
     pub fn tell(&self, s: impl Into<String>) {
         self.send(p::text(s));
@@ -313,7 +346,8 @@ impl Manager {
                     mgr,
                     local,
                     players: Vec::new(),
-                    entities: crate::entities::EntityArena::with_capacity(4096),
+                    entities: crate::entities::EntityArena::with_capacity(entity_view::CAPACITY),
+                    entity_view: entity_view::EntityView::new(entity_view::CAPACITY),
                     tick: 0,
                     signs: HashMap::new(),
                     time: 0,
@@ -355,6 +389,7 @@ pub struct Room {
     local: Arc<Lane>,
     pub players: Vec<Player>,
     pub entities: crate::entities::EntityArena,
+    entity_view: entity_view::EntityView,
     tick: u64,
     circuit: crate::redstone::Circuit,
     changed: Vec<(BlockPos, u16)>,
@@ -394,8 +429,8 @@ impl Room {
                 self.players[i].age += 1;
                 self.players[i].credit = (self.players[i].credit + 1).min(200);
                 let mut transfer = None;
-                let mut quit =
-                    self.players[i].output.is_closed() || self.players[i].failed.load(Acquire);
+                let mut quit = self.players[i].failed.load(Acquire)
+                    || matches!(&self.players[i].output, Outbox::Tokio(tx) if tx.is_closed());
                 for _ in 0..48 {
                     if quit {
                         break;
@@ -512,6 +547,7 @@ impl Room {
         player.loaded.clear();
         player.pending_cols.clear();
         player.seen.clear();
+        player.seen_entities.clear();
         player.center = None;
         player.spawn = spawn;
         player.send(p::spawn_point(spawn));
@@ -695,8 +731,8 @@ impl Room {
             let failed = &player.failed;
             player.loaded.retain(|&(x, z)| {
                 let keep = (x - c.0).abs() <= radius && (z - c.1).abs() <= radius;
-                if !keep && out.try_send(p::unload((x, z))).is_err() {
-                    failed.store(true, Release);
+                if !keep {
+                    out.send(p::unload((x, z)), failed);
                 }
                 keep
             });
@@ -778,6 +814,7 @@ impl Room {
                     a.send(p::health(20., 20, 5.));
                     a.loaded.clear();
                     a.seen.clear();
+                    a.seen_entities.clear();
                     a.teleport(a.spawn);
                 }
             }
@@ -1021,6 +1058,11 @@ impl Room {
         }
     }
     fn visibility(&mut self) {
+        self.entity_view.index(&self.entities);
+        for viewer in &mut self.players {
+            self.entity_view
+                .update(&self.entities, &self.world, viewer, self.tick);
+        }
         for v in self.grid.values_mut() {
             v.clear();
         }

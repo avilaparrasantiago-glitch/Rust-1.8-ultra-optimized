@@ -49,7 +49,7 @@ Verificado leyendo los 22 módulos de `src/` (5.947 líneas). Clasificación: CU
 | Redstone: dust, repeaters, doors, gates, pistons ≤12, levers; budget 512 updates/tick | PARCIAL | redstone.rs:36-130 — sin comparadores |
 | Comandos ~30 + tab completion, op por UUID | CUBIERTO (parcial vs ~40) | commands.rs:61-69, 526-559 |
 | Selectores @a/@e/@p/@r con filtros | CUBIERTO | selector.rs:32-158 |
-| Entidades no jugador | PARCIAL | `src/entities.rs` almacena objetos, orbes, flechas y mobs por mundo. Quedan pendientes su aparición en el juego y la difusión a clientes. |
+| Entidades no jugador | PARCIAL | `src/entities.rs` almacena objetos, orbes, flechas y mobs por mundo. `src/engine/entity_view.rs` difunde las entidades presentes en la arena. Quedan pendientes los mecanismos de juego que las crean. |
 | Permisos 0–4 granulares | FALTA | commands.rs:61-69 es op por UUID |
 
 ### 5. Scripting — CUBIERTA (mínima)
@@ -91,7 +91,9 @@ Orden: núcleo de memoria/ECS y Protocolo 47 antes que comandos y orquestación.
 
 - [x] **T1.1** Cada `Room` reserva 4096 plazas antes de arrancar su bucle. `EntityArena` en `src/entities.rs` mantiene las entidades activas contiguas, reutiliza las plazas liberadas y rechaza identificadores caducados. `Room::run` avanza la edad y la posición una vez por tick.
   - `tests/entities.rs` verifica los cuatro tipos, el límite de capacidad, la retirada con compactación y la reutilización de identificadores. En Windows x64, con 4096 entidades y tras un tick de calentamiento, 200 ciclos de retirada, inserción y tick registraron cero asignaciones en el hilo de la prueba. Cargo check y Clippy limpios, nextest 4/4.
-- [ ] **T1.2** Broadcast de spawn/move/destroy de entidades vía el zero-copy `Packet(Arc<Shared>)` (wire.rs:199-233) respetando el grid de visibilidad.
+- [x] **T1.2** Difusión de aparición, movimiento y retirada desde `Room::visibility`. El índice por columna respeta las columnas cargadas, la distancia y la línea de visión. El observador distingue generaciones al reutilizar una plaza. Los identificadores de red de estas entidades empiezan en 2³⁰.
+  - `src/engine/entity_view.rs`, `src/wire.rs` y `src/network.rs` reutilizan paquetes compartidos y una cola de salida acotada. Si una versión sigue en tránsito, el siguiente recorrido reintenta el envío con la posición vigente.
+  - `src/engine/entity_view_tests.rs` comprueba vectores de Protocolo 47, dos observadores, reutilización de plaza y entrega por tandas de 400 apariciones y retiradas. En Windows x64, perfil de pruebas, el recorrido de visibilidad de 32 mobs durante 200 ticks tras calentamiento encoló 6400 movimientos con cero asignaciones en el hilo medido. Check y Clippy limpios, nextest 8/8 y regresiones TCP 4/4.
 - [ ] **T1.3** Drops de items al romper bloque + pickup por AABB (reutilizar física de engine.rs:925-973).
 - [ ] **T1.4** Orbes de XP (spawn al matar, imán, recoger) sobre la misma arena.
 
@@ -134,4 +136,4 @@ Orden: núcleo de memoria/ECS y Protocolo 47 antes que comandos y orquestación.
 
 ## Siguiente bloque
 
-**T1.2** — Integrar las entidades de cada arena con la visibilidad por jugador y difundir su aparición, movimiento y retirada mediante paquetes compartidos de Protocolo 47.
+**T1.3** — Crear el objeto correspondiente al romper un bloque y recogerlo al entrar en la caja de colisión del jugador. Verificar por TCP la aparición del objeto y su retirada tras incorporarlo al inventario.

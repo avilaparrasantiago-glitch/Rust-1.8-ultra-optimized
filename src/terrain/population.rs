@@ -204,6 +204,7 @@ mod tests {
                     let cx = x.div_euclid(16) as i32;
                     let cz = z.div_euclid(16) as i32;
                     let world = Template {
+                        spawn_hint: None,
                         columns: [cx + 1, cx]
                             .into_iter()
                             .map(|i| ((i, cz), g.column(i, cz)))

@@ -24,6 +24,7 @@ pub struct Config {
     pub max_players: usize,
     pub view_distance: u8,
     pub worlds: Vec<String>,
+    pub dimensions: BTreeMap<String, crate::overworld::Dimension>,
     pub persistent_worlds: Vec<String>,
     pub scripts: BTreeMap<String, PathBuf>,
     #[serde(default)] // Older config files describe flat worlds.
@@ -43,6 +44,7 @@ impl Default for Config {
         Self {
             listen: "127.0.0.1:25565".parse().unwrap(),
             metrics: "127.0.0.1:9900".parse().unwrap(),
+            dimensions: BTreeMap::new(),
             persistent_worlds: Vec::new(),
             scripts: BTreeMap::new(),
             max_players: 128,
@@ -70,7 +72,9 @@ impl Config {
         if !c.listen.ip().is_loopback() && c.proxy_secret_env.is_none() {
             return Err(invalid("public listeners require signed proxy forwarding"));
         }
-        if c.persistent_worlds.iter().any(|n| !c.worlds.contains(n))
+        if c.dimensions.keys().any(|n| {
+            !c.worlds.contains(n) || c.arena_file.is_some() || !matches!(c.terrain, Terrain::Normal)
+        }) || c.persistent_worlds.iter().any(|n| !c.worlds.contains(n))
             || !(1..=8).contains(&c.view_distance)
             || !(1..=1_000_000).contains(&c.max_players)
             || c.worlds.is_empty()

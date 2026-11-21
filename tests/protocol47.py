@@ -277,32 +277,59 @@ class PlayTests(unittest.TestCase):
             self.assertEqual(number(a.until(0x0c))[0], peer)
 
     def test_normal_terrain_login_and_surface(self):
-        with server(arena_file=None, terrain="normal") as (port, _):
-            a = self.client(port)
-            a.login("Alice")
-            pos = a.until(8)
-            x, y, z = struct.unpack(">ddd", pos[:24])
-            self.assertEqual((x, z), (.5, .5))
-            self.assertGreater(y, 63)
-            a.send(6, pos[:32] + b"\1")
-            bulk = a.until(0x26)
-            cx, cz, mask = struct.unpack_from(">iiH", bulk, 2)
-            self.assertEqual((cx, cz), (0, 0))
-            self.assertTrue(mask & (1 << (int(y - 1) >> 4)))
-            blocks = 22  # sky flag, count, then two column headers
-            surface = struct.unpack_from("<H", bulk, blocks + (int(y) - 1) * 512)[0]
-            self.assertIn(surface >> 4, (2, 12))
-            self.assertEqual(struct.unpack_from("<H", bulk, blocks)[0], 7 << 4)
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "seed").write_text("12345")
+            with server(arena_file=None, terrain="normal", data_dir=directory) as (port, _):
+                self.check_default_terrain(port)
 
-            single = a.until(0x21)
-            b = self.client(port)
-            b.login("Bob")
-            b.confirm_pos()
-            self.assertEqual(b.until(0x26), bulk)
-            self.assertEqual(b.until(0x21), single)
+    def check_default_terrain(self, port):
+        a = self.client(port)
+        a.login("Alice")
+        pos = a.until(8)
+        x, y, z = struct.unpack(">ddd", pos[:24])
+        self.assertEqual((x, y, z), (-242.5, 84, 130.5))
+        a.send(6, pos[:32] + b"\1")
+        bulk = a.until(0x26)
+        cx, cz, mask = struct.unpack_from(">iiH", bulk, 2)
+        self.assertEqual(hashlib.sha256(bulk).hexdigest(),
+                         "21088036155a9c0234758d596046a4e9285f6e8a9158b5a1b25e37785cdddb51")
+        self.assertEqual((cx, cz), (-16, 8))
+        self.assertTrue(mask & (1 << (int(y - 1) >> 4)))
+        blocks = 22  # sky flag, count, then two column headers
+        surface = struct.unpack_from("<H", bulk, blocks + (int(y) - 1) * 512 + (2 * 16 + 13) * 2)[0]
+        self.assertNotEqual(surface, 0)
+        states_bytes = mask.bit_count() * 8192
+        states = bytearray(131072)
+        offset = blocks
+        for sy in range(16):
+            if mask & (1 << sy):
+                section = bulk[offset:offset + 8192]
+                states[sy * 8192:(sy + 1) * 8192:2] = section[1::2]
+                states[sy * 8192 + 1:(sy + 1) * 8192:2] = section[::2]
+                offset += 8192
+        self.assertEqual(offset - blocks, states_bytes)
+        self.assertEqual(hashlib.sha256(states).hexdigest(),
+                         "276bc597ae102e564fe22739933f427b956148b1656b6edd4b9c61a7c5abcbaf")
+        self.assertEqual(struct.unpack_from("<H", bulk, blocks)[0], 7 << 4)
+
+        single = a.until(0x21)
+        b = self.client(port)
+        b.login("Bob")
+        b.confirm_pos()
+        self.assertEqual(b.until(0x26), bulk)
+        self.assertEqual(b.until(0x21), single)
+        a.chat("/tp Alice -111.5 100 0.5")
+        a.confirm_pos()
+        column = a.until(0x21, lambda p: struct.unpack_from(">ii", p) == (-7, 0) and any(p[9:11]))
+        self.assertEqual(hashlib.sha256(column).hexdigest(),
+                         "62a8f15e12310e513f92ed8e2d0aa394e0b7abc529760501f5232ba1d556280a")
 
     def test_explore_edit_and_reopen(self):
         with tempfile.TemporaryDirectory() as world_dir:
+            # Start with a real unmarked legacy region and its sparse edits header.
+            legacy_region = Path(world_dir, "lobby", "region")
+            legacy_region.mkdir(parents=True)
+            (legacy_region / "generated.edits").write_bytes(b"OWED1")
             settings = dict(arena_file=None, terrain="normal", worlds=["lobby"],
                             persistent_worlds=["lobby"], data_dir=world_dir,
                             operators={str(uuid.UUID(bytes=hashlib.md5(f"OfflinePlayer:{n}".encode()).digest(),
@@ -335,10 +362,40 @@ class PlayTests(unittest.TestCase):
                     if not restart:
                         a.chat("/save-all")
                         deadline = time.monotonic() + 10
-                        while not (Path(world_dir) / "lobby/region/generated.edits").exists():
+                        while (legacy_region / "generated.edits").stat().st_size == 5:
                             self.assertLess(time.monotonic(), deadline)
                             time.sleep(.05)
                     a.s.close()
+
+    def test_dimension_transfer_and_return(self):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "seed").write_text("12345")
+            settings = dict(arena_file=None, terrain="normal", worlds=["lobby", "hell", "end"],
+                            dimensions={"hell": "nether", "end": "end"}, data_dir=directory)
+            with server(**settings) as (port, _):
+                client = self.client(port)
+                client.login("Alice")
+                client.confirm_pos()
+                first = client.until(0x26)
+                for name, dimension in [("hell", -1), ("end", 1), ("lobby", 0)]:
+                    client.chat("/world tp " + name)
+                    client.until(7, lambda b: struct.unpack_from(">i", b)[0] == dimension)
+                    client.confirm_pos()
+                    bulk = client.until(0x26)
+                    self.assertEqual(bulk[0], int(dimension == 0))
+                    count, offset = number(bulk, 1)
+                    lengths = []
+                    for _ in range(count):
+                        _, _, mask = struct.unpack_from(">iiH", bulk, offset)
+                        lengths.append(mask.bit_count() * (10240 + bulk[0] * 2048) + 256)
+                        offset += 10
+                    self.assertEqual(len(bulk), offset + sum(lengths))
+                    if dimension == 1:
+                        for x, y, z, block in [(98,48,-2,49),(102,48,2,49),(100,49,0,0),(102,51,-2,0)]:
+                            client.chat(f"/testforblock {x} {y} {z} {block}")
+                            client.until(2, lambda b: "Block matches" in text_at(b)[0])
+                    if dimension == 0:
+                        self.assertEqual(bulk, first)
 
     def test_queue_promotion(self):
         with server(max_players=1) as (port, _):

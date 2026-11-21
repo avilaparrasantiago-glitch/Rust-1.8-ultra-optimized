@@ -109,16 +109,20 @@ impl Section {
 }
 
 pub(crate) struct Column {
+    pub(crate) skylight: bool,
     pub(crate) sections: BTreeMap<u8, Section>,
     pub(crate) biomes: [u8; 256],
     pub(crate) packet: OnceLock<Packet>,
     pub(crate) nbt: Vec<u8>,
 }
 impl Column {
+    fn payload_len(&self) -> usize {
+        self.sections.len() * (10240 + usize::from(self.skylight) * 2048) + 256
+    }
     pub(crate) fn packet(&self, (x, z): ColumnPos) -> Packet {
         self.packet
             .get_or_init(|| {
-                let payload_len = self.sections.len() * 12288 + 256;
+                let payload_len = self.payload_len();
                 Packet::with_capacity(0x21, payload_len + 15, |w| {
                     w.put_i32(x);
                     w.put_i32(z);
@@ -129,7 +133,7 @@ impl Column {
                     for s in self.sections.values() {
                         s.write_states(w);
                     }
-                    for plane in 0..2 {
+                    for plane in 0..1 + usize::from(self.skylight) {
                         for s in self.sections.values() {
                             if let Some(light) = &s.light {
                                 w.extend_from_slice(&light[plane]);
@@ -146,6 +150,7 @@ impl Column {
 }
 
 pub struct Template {
+    pub(crate) spawn_hint: Option<[i32; 3]>,
     pub(crate) columns: BTreeMap<ColumnPos, Column>,
 }
 impl Template {
@@ -165,6 +170,7 @@ impl Template {
                 columns.insert(
                     (x, z),
                     Column {
+                        skylight: true,
                         sections: BTreeMap::from([(0, section)]),
                         biomes: [1; 256],
                         packet: OnceLock::new(),
@@ -173,7 +179,10 @@ impl Template {
                 );
             }
         }
-        Self { columns }
+        Self {
+            spawn_hint: None,
+            columns,
+        }
     }
     pub fn save(&self, path: &Path) -> io::Result<()> {
         let mut buf = BytesMut::new();
@@ -256,6 +265,7 @@ impl Template {
                 .insert(
                     pos,
                     Column {
+                        skylight: true,
                         sections,
                         biomes,
                         packet: OnceLock::new(),
@@ -268,7 +278,10 @@ impl Template {
             }
         }
         r.end()?;
-        Ok(Self { columns })
+        Ok(Self {
+            spawn_hint: None,
+            columns,
+        })
     }
     pub fn block(&self, (x, y, z): BlockPos) -> u16 {
         self.columns
@@ -279,6 +292,9 @@ impl Template {
             })
     }
     pub fn spawn(&self) -> io::Result<[f64; 3]> {
+        if let Some([x, y, z]) = self.spawn_hint {
+            return Ok([f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5]);
+        }
         for (cx, cz) in std::iter::once((0, 0)).chain(self.columns.keys().copied()) {
             let (x, z) = (cx * 16, cz * 16);
             if let Some(y) = (0..=252).rev().find(|&y| {
@@ -297,12 +313,12 @@ impl Template {
     pub(crate) fn bulk_packet(&self, positions: [ColumnPos; 2]) -> Option<Packet> {
         let [a, b] = positions;
         let columns = [self.columns.get(&a)?, self.columns.get(&b)?];
-        let lengths = columns.map(|col| col.sections.len() * 12288 + 256);
+        let lengths = columns.map(Column::payload_len);
         Some(Packet::with_capacity(
             0x26,
             23 + lengths.iter().sum::<usize>(),
             |w| {
-                w.put_u8(1); // Overworld sky light
+                w.put_u8(u8::from(columns[0].skylight));
                 w.var(2);
                 for (&(x, z), col) in positions.iter().zip(columns) {
                     w.put_i32(x);
@@ -341,6 +357,7 @@ impl World {
             template,
             edits: Arc::default(),
             generated: Template {
+                spawn_hint: None,
                 columns: BTreeMap::new(),
             },
         }

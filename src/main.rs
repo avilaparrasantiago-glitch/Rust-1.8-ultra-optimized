@@ -57,7 +57,7 @@ fn main() -> io::Result<()> {
         Some(p) => Template::load(p)?,
         None => match cfg.terrain {
             Terrain::Flat => Template::flat(radius),
-            Terrain::Normal => Template::normal(seed, radius),
+            Terrain::Normal => Template::overworld(seed, radius),
         },
     };
     let manager = Manager::new(cfg, template, seed)?;

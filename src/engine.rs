@@ -298,19 +298,36 @@ impl Manager {
         let local = lane.clone();
         let normal = self.cfg.arena_file.is_none()
             && matches!(self.cfg.terrain, crate::config::Terrain::Normal);
-        let generation = normal
-            .then(|| generation::Generation::new(self.seed, self.metrics.clone()))
-            .transpose()?;
-        let (store, template, edits) = if self.cfg.persistent_worlds.iter().any(|s| s == name) {
-            let (s, t, edits) = crate::persistence::Store::open(
-                &self.cfg.data_dir.join(name).join("region"),
-                self.template.clone(),
-                normal.then_some(self.seed),
-            )?;
-            (Some(s), t, edits)
-        } else {
-            (None, self.template.clone(), Default::default())
+        let dim = self.cfg.dimensions.get(name).copied();
+        let dimension = match dim {
+            None => 0,
+            Some(crate::overworld::Dimension::Nether) => -1,
+            Some(crate::overworld::Dimension::End) => 1,
         };
+        let template = match dim {
+            Some(d) => Arc::new(Template::dimension(
+                self.seed,
+                i32::from(self.cfg.view_distance) + 1,
+                d,
+            )),
+            None => self.template.clone(),
+        };
+        let (store, template, edits, legacy) =
+            if self.cfg.persistent_worlds.iter().any(|s| s == name) {
+                let (s, t, edits) = crate::persistence::Store::open(
+                    &self.cfg.data_dir.join(name).join("region"),
+                    template,
+                    normal.then_some(self.seed),
+                    dimension,
+                )?;
+                let legacy = s.legacy;
+                (Some(s), t, edits, legacy)
+            } else {
+                (None, template, Default::default(), false)
+            };
+        let generation = normal
+            .then(|| generation::Generation::new(self.seed, legacy, dim, self.metrics.clone()))
+            .transpose()?;
         let mut world = World::new(name.into(), template);
         world.edits = edits;
         let handle = std::thread::Builder::new()
@@ -322,6 +339,7 @@ impl Manager {
                     core_affinity::set_for_current(cores[index % cores.len()]);
                 }
                 Room {
+                    dimension,
                     world,
                     generation,
                     notifications,
@@ -371,6 +389,7 @@ impl Manager {
 }
 
 pub struct Room {
+    dimension: i32,
     generation: Option<generation::Generation>,
     notifications: Receiver<Packet>,
     pub world: World,
@@ -532,14 +551,37 @@ impl Room {
         }
     }
     fn join(&mut self, mut player: Box<Player>, transfer: bool) {
+        if self.dimension == 1 {
+            for x in 98..=102 {
+                for z in -2..=2 {
+                    for y in 48..=51 {
+                        let pos = (x, y, z);
+                        let state = if y == 48 { 49 << 4 } else { 0 };
+                        if self.world.block(pos) != state
+                            && let Err(error) = self.set_block(pos, state)
+                        {
+                            player.tell(format!("End arrival failed: {error}"));
+                            return;
+                        }
+                    }
+                }
+            }
+        }
         let spawn = self.world.template.spawn().expect("template validated");
         player.window = None;
         player.dig = None;
         if transfer {
-            player.send(p::respawn(-1, player.mode));
-            player.send(p::respawn(0, player.mode));
+            player.send(p::respawn(
+                if self.dimension == -1 { 0 } else { -1 },
+                player.mode,
+            ));
+            player.send(p::respawn(self.dimension, player.mode));
         } else {
-            player.send(p::join(player.id, player.mode));
+            player.send(p::join_dimension(
+                player.id,
+                player.mode,
+                self.dimension as i8,
+            ));
         }
         player.loaded.clear();
         player.pending_cols.clear();
@@ -857,7 +899,7 @@ impl Room {
                 let a = &mut self.players[i];
                 if a.hp <= 0. {
                     a.hp = 20.;
-                    a.send(p::respawn(0, a.mode));
+                    a.send(p::respawn(self.dimension, a.mode));
                     a.send(p::health(20., 20, 5.));
                     a.loaded.clear();
                     a.seen.clear();

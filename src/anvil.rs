@@ -116,6 +116,7 @@ fn column(data: Vec<u8>, pos: ColumnPos) -> io::Result<Column> {
         );
     }
     Ok(Column {
+        skylight: true,
         sections,
         biomes,
         nbt: data,
@@ -222,7 +223,10 @@ pub fn import(dir: &Path) -> io::Result<Template> {
     if columns.is_empty() {
         return Err(invalid("no Anvil chunks found"));
     }
-    Ok(Template { columns })
+    Ok(Template {
+        spawn_hint: None,
+        columns,
+    })
 }
 fn encode_column(
     pos: ColumnPos,
@@ -299,10 +303,15 @@ fn encode_column(
         } else {
             c.remove("Add");
         }
+        let light = section.and_then(|s| s.light.as_deref());
         c.entry("BlockLight".into())
-            .or_insert_with(|| array(&[0; 2048]));
-        c.entry("SkyLight".into())
-            .or_insert_with(|| array(&[255; 2048]));
+            .or_insert_with(|| array(light.map_or(&[0; 2048], |v| &v[0])));
+        if col.skylight {
+            c.entry("SkyLight".into())
+                .or_insert_with(|| array(light.map_or(&[255; 2048], |v| &v[1])));
+        } else {
+            c.remove("SkyLight");
+        }
         sections.push(Value::Compound(c));
     }
     if let Some(changes) = changes

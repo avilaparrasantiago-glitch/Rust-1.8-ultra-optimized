@@ -176,6 +176,7 @@ impl Generator {
             );
         }
         Column {
+            skylight: true,
             sections,
             biomes: surface.map(|s| s.biome),
             packet: OnceLock::new(),
@@ -185,6 +186,54 @@ impl Generator {
 }
 
 impl Template {
+    pub(crate) fn dimension(seed: i64, radius: i32, dim: crate::overworld::Dimension) -> Self {
+        let g = crate::overworld::DimensionTerrain::new(seed, dim);
+        let end = dim == crate::overworld::Dimension::End;
+        let center = if end { 100 >> 4 } else { 0 };
+        let mut template = Self {
+            spawn_hint: None,
+            columns: (center - radius..=center + radius)
+                .into_par_iter()
+                .flat_map_iter(|x| {
+                    let g = &g;
+                    (-radius..=radius).map(move |z| ((x, z), g.column(x, z)))
+                })
+                .collect(),
+        };
+        template.spawn_hint = if end {
+            Some([100, 49, 0])
+        } else {
+            (0..16)
+                .flat_map(|z| (0..16).map(move |x| (x, z)))
+                .find_map(|(x, z)| {
+                    (32..120u8)
+                        .rev()
+                        .find(|&y| {
+                            matches!(template.block((x, y, z)) >> 4, 87 | 88 | 13)
+                                && template.block((x, y + 1, z)) == 0
+                                && template.block((x, y + 2, z)) == 0
+                        })
+                        .map(|y| [x, i32::from(y) + 1, z])
+                })
+        };
+        template
+    }
+    pub fn overworld(seed: i64, radius: i32) -> Self {
+        let provider = crate::overworld::Overworld::new(seed);
+        let spawn = provider.spawn();
+        let (sx, sz) = (spawn[0] >> 4, spawn[2] >> 4);
+        let columns = (sx - radius..=sx + radius)
+            .into_par_iter()
+            .flat_map_iter(|cx| {
+                let provider = &provider;
+                (sz - radius..=sz + radius).map(move |cz| ((cx, cz), provider.column(cx, cz)))
+            })
+            .collect();
+        Self {
+            spawn_hint: Some(spawn),
+            columns,
+        }
+    }
     pub fn normal(seed: i64, radius: i32) -> Self {
         let generator = Generator(seed as u64);
         let columns = (-radius..=radius)
@@ -194,7 +243,10 @@ impl Template {
                 (-radius..=radius).map(move |cz| ((cx, cz), generator.column(cx, cz)))
             })
             .collect();
-        Self { columns }
+        Self {
+            spawn_hint: None,
+            columns,
+        }
     }
 }
 
@@ -251,6 +303,7 @@ mod tests {
     fn seed_and_load_order() {
         let positions = [(-1, 1), (0, -1), (1, 0)];
         let generate = |order: &[(i32, i32)]| Template {
+            spawn_hint: None,
             columns: order
                 .iter()
                 .map(|&(x, z)| ((x, z), Generator((-42i64) as u64).column(x, z)))

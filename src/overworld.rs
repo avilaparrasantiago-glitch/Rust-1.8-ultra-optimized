@@ -1,7 +1,18 @@
 //! Independently verifiable stages of DEFAULT generation in Java Edition 1.8.
 
+mod biomes;
+mod carvers;
+mod column;
+mod mesa;
+pub use carvers::Carver;
+mod dimensions;
 mod noise;
+pub use dimensions::{Dimension, DimensionTerrain};
+mod provider;
+mod simplex;
+pub use biomes::Biomes;
 pub use noise::Octaves;
+pub use provider::Overworld;
 
 fn mix(seed: i64, salt: i64) -> i64 {
     seed.wrapping_mul(

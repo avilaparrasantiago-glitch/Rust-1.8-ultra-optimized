@@ -105,7 +105,10 @@ pub struct Octaves(Vec<Improved>);
 impl Octaves {
     pub fn new(seed: i64, count: usize) -> Self {
         let mut rng = JavaRandom::new(seed);
-        Self((0..count).map(|_| Improved::new(&mut rng)).collect())
+        Self::from_random(&mut rng, count)
+    }
+    pub(super) fn from_random(rng: &mut JavaRandom, count: usize) -> Self {
+        Self((0..count).map(|_| Improved::new(rng)).collect())
     }
 
     /// Fill Java's X, Z, Y order. The caller can reuse the same buffer across chunks.

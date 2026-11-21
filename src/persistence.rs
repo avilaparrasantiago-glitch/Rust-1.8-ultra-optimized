@@ -12,11 +12,17 @@ enum Save {
 
 type Opened = (Store, Arc<Template>, Arc<Edits>);
 pub struct Store {
+    pub(crate) legacy: bool,
     tx: Sender<Save>,
     worker: Option<JoinHandle<io::Result<()>>>,
 }
 impl Store {
-    pub fn open(dir: &Path, base: Arc<Template>, seed: Option<i64>) -> io::Result<Opened> {
+    pub fn open(
+        dir: &Path,
+        base: Arc<Template>,
+        seed: Option<i64>,
+        dimension: i32,
+    ) -> io::Result<Opened> {
         std::fs::create_dir_all(dir)?;
         let lease = std::fs::OpenOptions::new()
             .create(true)
@@ -26,24 +32,42 @@ impl Store {
         lease.try_lock().map_err(io::Error::other)?;
         let normal = seed.is_some();
         let marker = dir.join("generator.json");
-        if marker.try_exists()? {
+        let deltas = dir.join("generated.edits");
+        let exists = std::fs::read_dir(dir)?
+            .filter_map(Result::ok)
+            .any(|e| e.path().extension().is_some_and(|x| x == "mca"));
+        let legacy = if marker.try_exists()? {
             let saved: GeneratorIdentity = serde_json::from_reader(File::open(&marker)?)?;
-            if Some(saved) != seed.map(GeneratorIdentity::legacy) {
+            let legacy = dimension == 0 && saved.algorithm == "syrust-overworld";
+            if Some(saved) != seed.map(|seed| GeneratorIdentity::new(seed, legacy, dimension)) {
                 return Err(crate::wire::invalid(
                     "generator identity differs from saved world",
                 ));
             }
-        }
-        let exists = std::fs::read_dir(dir)?
-            .filter_map(Result::ok)
-            .any(|e| e.path().extension().is_some_and(|x| x == "mca"));
+            legacy
+        } else {
+            normal && dimension == 0 && (exists || deltas.try_exists()?)
+        };
         let template = if exists {
-            Arc::new(anvil::import(dir)?)
+            {
+                let mut t = anvil::import(dir)?;
+                if !legacy {
+                    t.spawn_hint = base.spawn_hint;
+                }
+                for col in t.columns.values_mut() {
+                    col.skylight = dimension == 0;
+                }
+                Arc::new(t)
+            }
+        } else if let Some(seed) = seed
+            && legacy
+        {
+            let radius = (base.columns.len().isqrt().saturating_sub(1) / 2) as i32;
+            Arc::new(Template::normal(seed, radius))
         } else {
             base
         };
         template.spawn()?;
-        let deltas = dir.join("generated.edits");
         let edits = if normal && deltas.try_exists()? {
             read_deltas(&deltas)?
         } else {
@@ -53,7 +77,7 @@ impl Store {
             && !marker.try_exists()?
         {
             let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
-            serde_json::to_writer(&mut tmp, &GeneratorIdentity::legacy(seed))?;
+            serde_json::to_writer(&mut tmp, &GeneratorIdentity::new(seed, legacy, dimension))?;
             tmp.as_file().sync_all()?;
             tmp.persist_noclobber(marker).map_err(|e| e.error)?;
         }
@@ -85,6 +109,7 @@ impl Store {
             })?;
         Ok((
             Self {
+                legacy,
                 tx,
                 worker: Some(worker),
             },
@@ -119,10 +144,15 @@ struct GeneratorIdentity {
 }
 
 impl GeneratorIdentity {
-    fn legacy(seed: i64) -> Self {
+    fn new(seed: i64, legacy: bool, dimension: i32) -> Self {
         Self {
-            dimension: 0,
-            algorithm: "syrust-overworld".into(),
+            dimension,
+            algorithm: if legacy {
+                "syrust-overworld"
+            } else {
+                "syrust-default-1.8"
+            }
+            .into(),
             revision: 1,
             options: String::new(),
             seed,
@@ -204,12 +234,12 @@ mod tests {
         let path = dir.path().join("generated.edits");
         write_deltas(dir.path(), &path, &base, &edits)?;
         let original = std::fs::read(&path)?;
-        let (mut store, _, loaded) = Store::open(dir.path(), base.clone(), Some(-72))?;
+        let (mut store, _, loaded) = Store::open(dir.path(), base.clone(), Some(-72), 0)?;
         assert_eq!(*loaded, edits);
         store.close(loaded)?;
         assert_eq!(std::fs::read(&path)?, original);
-        assert!(Store::open(dir.path(), base.clone(), Some(42)).is_err());
-        let (mut store, _, reopened) = Store::open(dir.path(), base, Some(-72))?;
+        assert!(Store::open(dir.path(), base.clone(), Some(42), 0).is_err());
+        let (mut store, _, reopened) = Store::open(dir.path(), base, Some(-72), 0)?;
         assert_eq!(*reopened, edits);
         store.close(reopened)
     }

@@ -42,10 +42,13 @@ pub fn position(pos: [f64; 3], look: [f32; 2]) -> Packet {
     })
 }
 pub fn join(id: i32, mode: u8) -> Packet {
+    join_dimension(id, mode, 0)
+}
+pub fn join_dimension(id: i32, mode: u8, dimension: i8) -> Packet {
     Packet::new(0x01, |w| {
         w.put_i32(id);
         w.put_u8(mode);
-        w.put_i8(0);
+        w.put_i8(dimension);
         w.put_u8(2);
         w.put_u8(255);
         w.string("flat");

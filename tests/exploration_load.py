@@ -37,7 +37,8 @@ def run():
     with tempfile.TemporaryDirectory() as temp:
         Path(temp, "seed").write_text("9581")
         procs = []
-        with server(started=procs.append, arena_file=None, terrain="normal", worlds=["lobby"],
+        with server(started=procs.append, arena_file=None, terrain="normal", worlds=["lobby","hell","end"],
+                    dimensions={"hell":"nether","end":"end"},
                     view_distance=1, data_dir=temp) as (port, monitoring):
             proc = procs[0]
             idle = rss(proc)
@@ -55,6 +56,12 @@ def run():
                 start = time.monotonic()
                 peak = rss(proc)
                 for step in range(14):
+                    if step in (4, 8, 12):
+                        destination = {4:"hell",8:"end",12:"lobby"}[step]
+                        for client in clients:
+                            client.chat("/world tp " + destination)
+                            client.confirm_pos()
+                            client.until(0x26)
                     for index, (client, name) in enumerate(zip(clients, ("Alice", "Bob"))):
                         # Alice operates both teleports. The clients independently verify receipt.
                         cx = (step + 2) * (6 if index == 0 else -6)
@@ -72,7 +79,7 @@ def run():
                 bounds = [k.split('"')[1] for k,v in diff.items()
                           if "_bucket" in k and v >= .99 * ticks]
                 columns = diff["coral_generated_columns_total"]
-                print(json.dumps(dict(seconds=seconds, ticks=ticks, tps=ticks / seconds,
+                print(json.dumps(dict(seconds=seconds, ticks=ticks, worlds=3, mean_tps_per_world=ticks / seconds / 3,
                                       p99_upper_seconds=bounds[0], overruns=diff["coral_tick_overruns_total"],
                                       generated_columns=columns,
                                       cold_mean_us=diff["coral_generation_nanoseconds_total"]/columns/1000,

@@ -1,4 +1,5 @@
 """Run with CORAL_BIN pointing to the build under measurement."""
+import argparse
 import ctypes
 import json
 import os
@@ -33,12 +34,13 @@ def metrics(port):
                 (line.split() for line in response.read().decode().splitlines())}
 
 
-def run():
+def run(overworld_only=False):
     with tempfile.TemporaryDirectory() as temp:
         Path(temp, "seed").write_text("9581")
         procs = []
+        dimensions = {} if overworld_only else {"dimensions": {"hell":"nether","end":"end"}}
         with server(started=procs.append, arena_file=None, terrain="normal", worlds=["lobby","hell","end"],
-                    dimensions={"hell":"nether","end":"end"},
+                    **dimensions,
                     view_distance=1, data_dir=temp) as (port, monitoring):
             proc = procs[0]
             idle = rss(proc)
@@ -94,4 +96,6 @@ def run():
 
 
 if __name__ == "__main__":
-    run()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--overworld-only", action="store_true", help="Use three Overworld rooms for comparison with the legacy server.")
+    run(parser.parse_args().overworld_only)

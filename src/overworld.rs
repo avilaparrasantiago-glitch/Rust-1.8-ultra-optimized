@@ -6,6 +6,8 @@ mod column;
 mod mesa;
 pub use carvers::Carver;
 mod dimensions;
+mod spikes;
+pub use spikes::{EndSpike, SpikeGenerator};
 mod noise;
 pub use dimensions::{Dimension, DimensionTerrain};
 mod provider;
@@ -138,7 +140,39 @@ pub enum StructureGrid {
     OceanMonument,
 }
 
+/// MapGenNetherBridge tests one candidate in roughly one third of its 16-chunk cells.
+pub fn nether_fortress_start(seed: i64, x: i32, z: i32) -> bool {
+    let (rx, rz) = (x >> 4, z >> 4);
+    let mut rng = JavaRandom::new(seed ^ i64::from(rx ^ (rz << 4)));
+    rng.bits(32);
+    rng.bounded(3) == 0
+        && x == (rx << 4) + 4 + rng.bounded(8)
+        && z == (rz << 4) + 4 + rng.bounded(8)
+}
+
 impl StructureGrid {
+    /// Tests both the regional candidate and the biome filters used before piece assembly.
+    pub fn starts_at(&self, seed: i64, biomes: &Biomes, cx: i32, cz: i32) -> bool {
+        if self.candidate(seed, cx, cz) != (cx, cz) {
+            return false;
+        }
+        let (x, z) = (cx * 16 + 8, cz * 16 + 8);
+        match self {
+            Self::Village => matches!(biomes.quarter(x >> 2, z >> 2, 1, 1)[0], 1 | 2 | 35),
+            Self::ScatteredFeature => matches!(biomes.blocks(x, z, 1, 1)[0], 2 | 6 | 17 | 21 | 22),
+            Self::OceanMonument => {
+                let (left, top) = ((x - 29) >> 2, (z - 29) >> 2);
+                let width = (((x + 29) >> 2) - left + 1) as usize;
+                let height = (((z + 29) >> 2) - top + 1) as usize;
+                biomes.blocks(x, z, 1, 1)[0] == 24
+                    && biomes
+                        .quarter(left, top, width, height)
+                        .iter()
+                        .all(|id| matches!(id, 0 | 7 | 10 | 11 | 24))
+            }
+        }
+    }
+
     /// Candidate chunk in the 32-chunk cell containing the input chunk.
     /// Biome viability is a subsequent stage.
     pub fn candidate(&self, seed: i64, chunk_x: i32, chunk_z: i32) -> (i32, i32) {
@@ -165,6 +199,37 @@ impl StructureGrid {
 mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
+
+    #[test]
+    fn official_viable_structure_starts() {
+        use StructureGrid::*;
+        for (seed, expected) in [
+            (
+                12345,
+                "e15df292c4b264340cb4b54038b90a26586b05833b7373d47ce238b92bf34a17",
+            ),
+            (
+                -9581,
+                "4679a8b9be270904a09e20cc78720a23f5306406e5c3245357ddd0bf4357a3ca",
+            ),
+        ] {
+            let biomes = Biomes::new(seed);
+            let mut hash = Sha256::new();
+            for cz in -128..128 {
+                for cx in -128..128 {
+                    let mut mask = u8::from(nether_fortress_start(seed, cx, cz)) << 3;
+                    for (i, kind) in [Village, ScatteredFeature, OceanMonument]
+                        .iter()
+                        .enumerate()
+                    {
+                        mask |= u8::from(kind.starts_at(seed, &biomes, cx, cz)) << i;
+                    }
+                    hash.update([mask]);
+                }
+            }
+            assert_eq!(format!("{:x}", hash.finalize()), expected);
+        }
+    }
 
     #[test]
     fn cubiomes_mineshaft_starts() {

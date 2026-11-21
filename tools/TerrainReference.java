@@ -8,8 +8,13 @@ public final class TerrainReference {
     static class World extends adm {
         aec biomes;
         long seed;
+        static ato settings(long seed) {
+            dn tag = new dn();
+            tag.a("RandomSeed", seed);
+            return new ato(tag);
+        }
         World(long seed) {
-            super(null, new ato(new dn()), new ano(), new nt(), false);
+            super(null, settings(seed), new ano(), new nt(), false);
             this.seed = seed;
             biomes = new aec(seed, adr.b, "");
         }
@@ -18,6 +23,28 @@ public final class TerrainReference {
         public ady b(cj pos) { return biomes.a(pos); }
         protected amv k() { return null; }
         protected int q() { return 0; }
+    }
+    static class SpikeWorld extends World {
+        final int floor, hole;
+        final java.util.List<String> trace = new java.util.ArrayList<>();
+        SpikeWorld(long seed, int floor, int hole) {
+            super(seed);
+            this.floor = floor;
+            this.hole = hole;
+        }
+        public boolean d(cj pos) { return pos.o() > floor; }
+        public alz p(cj pos) {
+            return (pos.o() == floor && pos.n() != hole ? afi.bH : afi.a).Q();
+        }
+        public boolean a(cj pos, alz state, int flags) {
+            trace.add(pos.n()+" "+pos.o()+" "+pos.p()+" "+afh.a(state.c()));
+            return true;
+        }
+        public boolean d(pk entity) {
+            if (!(entity instanceof uf)) throw new AssertionError();
+            trace.add("crystal "+(int)(2*entity.s)+" "+(int)entity.t+" "+(int)(2*entity.u)+" "+Float.floatToIntBits(entity.y));
+            return true;
+        }
     }
     public static void main(String[] args) throws Exception {
         kb.c();
@@ -29,6 +56,28 @@ public final class TerrainReference {
         long seed = Long.parseLong(args[0]);
         int x = Integer.parseInt(args[1]), z = Integer.parseInt(args[2]);
         World world = new World(seed);
+        if (args[3].equals("spike")) {
+            SpikeWorld spike = new SpikeWorld(seed, 62, Integer.parseInt(args[5]));
+            Random random = new Random(seed);
+            boolean placed = new apq(afi.bH).b(spike, random, new cj(x, 63, z));
+            spike.trace.add((placed ? "placed " : "failed ") + random.nextInt());
+            java.nio.file.Files.write(java.nio.file.Paths.get(args[4]), (String.join("\n", spike.trace)+"\n").getBytes("UTF-8"));
+            return;
+        }
+        if (args[3].equals("structure-starts")) {
+            aqq[] structures = {new aqv(), new aqm(), new aqk(), new aqi()};
+            for (aqq generator : structures) generator.c = world;
+            try (OutputStream out = new BufferedOutputStream(new FileOutputStream(args[4]))) {
+                for (int cz = -z; cz < z; cz++)
+                    for (int cx = -x; cx < x; cx++) {
+                        int mask = 0;
+                        for (int i = 0; i < structures.length; i++)
+                            if (structures[i].a(cx, cz)) mask |= 1 << i;
+                        out.write(mask);
+                    }
+            }
+            return;
+        }
         if (args[3].equals("strongholds")) {
             aqo generator = new aqo();
             generator.c=world;

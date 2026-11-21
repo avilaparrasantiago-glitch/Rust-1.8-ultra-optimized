@@ -340,6 +340,7 @@ impl Manager {
                 }
                 Room {
                     dimension,
+                    end_origin_pending: normal && dimension == 1,
                     world,
                     generation,
                     notifications,
@@ -390,6 +391,7 @@ impl Manager {
 
 pub struct Room {
     dimension: i32,
+    end_origin_pending: bool,
     generation: Option<generation::Generation>,
     notifications: Receiver<Packet>,
     pub world: World,
@@ -428,6 +430,19 @@ impl Room {
             }
             if let Some(generation) = &mut self.generation {
                 generation.collect(&mut self.world.generated);
+            }
+            if self.end_origin_pending
+                && [(0, 0), (1, 0), (0, 1), (1, 1)]
+                    .into_iter()
+                    .all(|pos| self.world.contains(pos))
+            {
+                let dragon = crate::entities::Entity {
+                    kind: crate::entities::EntityKind::Mob { kind: 63 },
+                    position: [0., 128., 0.],
+                    velocity: [0.; 3],
+                    age: 0,
+                };
+                self.end_origin_pending = self.entities.insert(dragon).is_err();
             }
             self.tick += 1;
             self.time = self.time.wrapping_add(1);

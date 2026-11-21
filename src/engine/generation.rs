@@ -155,6 +155,18 @@ mod tests {
             std::thread::yield_now();
         }
         assert_eq!(first.columns[&pos].biomes, [8; 256]);
+        let before_eviction = first.columns[&pos].packet(pos);
+        first.columns.extend(Template::flat(3).columns);
+        hell.trim(&[], 1, &mut first);
+        assert!(first.columns.is_empty());
+        hell.request(pos);
+        let until = Instant::now() + std::time::Duration::from_secs(10);
+        while !first.contains(pos) {
+            assert!(Instant::now() < until);
+            hell.collect(&mut first);
+            std::thread::yield_now();
+        }
+        assert_eq!(first.columns[&pos].packet(pos).body(), before_eviction.body());
     }
 
     #[test]

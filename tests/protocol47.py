@@ -350,6 +350,7 @@ class PlayTests(unittest.TestCase):
                     if restart:
                         self.assertEqual(column, original_column)
                         self.assertEqual(json.loads(marker.read_text()), identity)
+                        self.assertEqual((legacy_region / "generated.edits").read_bytes(), saved_edits)
                     else:
                         original_column = column
                         identity = json.loads(marker.read_text())
@@ -365,6 +366,8 @@ class PlayTests(unittest.TestCase):
                         while (legacy_region / "generated.edits").stat().st_size == 5:
                             self.assertLess(time.monotonic(), deadline)
                             time.sleep(.05)
+                        saved_edits = (legacy_region / "generated.edits").read_bytes()
+                        self.assertTrue(any(legacy_region.glob("*.mca")))
                     a.s.close()
 
     def test_dimension_transfer_and_return(self):
@@ -394,6 +397,11 @@ class PlayTests(unittest.TestCase):
                         for x, y, z, block in [(98,48,-2,49),(102,48,2,49),(100,49,0,0),(102,51,-2,0)]:
                             client.chat(f"/testforblock {x} {y} {z} {block}")
                             client.until(2, lambda b: "Block matches" in text_at(b)[0])
+                        client.chat("/tp Alice 0.5 128 0.5")
+                        client.confirm_pos()
+                        spawn = client.until(0x0f, lambda b: b[number(b)[1]] == 63)
+                        _, offset = number(spawn)
+                        self.assertEqual(struct.unpack_from(">iii", spawn, offset + 1), (0, 128 * 32, 0))
                     if dimension == 0:
                         self.assertEqual(bulk, first)
 

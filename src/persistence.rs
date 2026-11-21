@@ -17,11 +17,37 @@ pub struct Store {
     worker: Option<JoinHandle<io::Result<()>>>,
 }
 impl Store {
+    pub(crate) fn dimension_revision(dir: &Path) -> io::Result<u32> {
+        match File::open(dir.join("generator.json")) {
+            Ok(file) => {
+                let saved: GeneratorIdentity = serde_json::from_reader(file)?;
+                match saved.revision {
+                    r @ (1 | 2) => Ok(r),
+                    _ => Err(crate::wire::invalid("unknown dimension generator revision")),
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if dir.try_exists()? {
+                    for entry in std::fs::read_dir(dir)? {
+                        let path = entry?.path();
+                        if path.extension().is_some_and(|ext| ext == "mca")
+                            || path.ends_with("generated.edits")
+                        {
+                            return Ok(1);
+                        }
+                    }
+                }
+                Ok(2)
+            }
+            Err(error) => Err(error),
+        }
+    }
     pub fn open(
         dir: &Path,
         base: Arc<Template>,
         seed: Option<i64>,
         dimension: i32,
+        revision: u32,
     ) -> io::Result<Opened> {
         std::fs::create_dir_all(dir)?;
         let lease = std::fs::OpenOptions::new()
@@ -39,7 +65,9 @@ impl Store {
         let legacy = if marker.try_exists()? {
             let saved: GeneratorIdentity = serde_json::from_reader(File::open(&marker)?)?;
             let legacy = dimension == 0 && saved.algorithm == "syrust-overworld";
-            if Some(saved) != seed.map(|seed| GeneratorIdentity::new(seed, legacy, dimension)) {
+            if Some(saved)
+                != seed.map(|seed| GeneratorIdentity::new(seed, legacy, dimension, revision))
+            {
                 return Err(crate::wire::invalid(
                     "generator identity differs from saved world",
                 ));
@@ -77,7 +105,10 @@ impl Store {
             && !marker.try_exists()?
         {
             let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
-            serde_json::to_writer(&mut tmp, &GeneratorIdentity::new(seed, legacy, dimension))?;
+            serde_json::to_writer(
+                &mut tmp,
+                &GeneratorIdentity::new(seed, legacy, dimension, revision),
+            )?;
             tmp.as_file().sync_all()?;
             tmp.persist_noclobber(marker).map_err(|e| e.error)?;
         }
@@ -144,7 +175,7 @@ struct GeneratorIdentity {
 }
 
 impl GeneratorIdentity {
-    fn new(seed: i64, legacy: bool, dimension: i32) -> Self {
+    fn new(seed: i64, legacy: bool, dimension: i32, revision: u32) -> Self {
         Self {
             dimension,
             algorithm: if legacy {
@@ -153,7 +184,7 @@ impl GeneratorIdentity {
                 "syrust-default-1.8"
             }
             .into(),
-            revision: 1,
+            revision,
             options: String::new(),
             seed,
         }
@@ -234,12 +265,12 @@ mod tests {
         let path = dir.path().join("generated.edits");
         write_deltas(dir.path(), &path, &base, &edits)?;
         let original = std::fs::read(&path)?;
-        let (mut store, _, loaded) = Store::open(dir.path(), base.clone(), Some(-72), 0)?;
+        let (mut store, _, loaded) = Store::open(dir.path(), base.clone(), Some(-72), 0, 1)?;
         assert_eq!(*loaded, edits);
         store.close(loaded)?;
         assert_eq!(std::fs::read(&path)?, original);
-        assert!(Store::open(dir.path(), base.clone(), Some(42), 0).is_err());
-        let (mut store, _, reopened) = Store::open(dir.path(), base, Some(-72), 0)?;
+        assert!(Store::open(dir.path(), base.clone(), Some(42), 0, 1).is_err());
+        let (mut store, _, reopened) = Store::open(dir.path(), base, Some(-72), 0, 1)?;
         assert_eq!(*reopened, edits);
         store.close(reopened)
     }

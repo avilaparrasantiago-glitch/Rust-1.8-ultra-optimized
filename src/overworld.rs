@@ -6,6 +6,8 @@ mod column;
 mod mesa;
 pub use carvers::Carver;
 mod dimensions;
+pub mod fortress;
+mod temple;
 mod spikes;
 pub use spikes::{EndSpike, SpikeGenerator};
 mod noise;

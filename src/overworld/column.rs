@@ -37,6 +37,9 @@ impl Overworld {
         for phase in [super::Carver::Caves, super::Carver::Ravine] {
             phase.carve(self.seed, cx, cz, &mut states, &ids);
         }
+        if self.structures {
+            self.desert_temple(cx, cz, &mut states);
+        }
         pack(&states, std::array::from_fn(|i| ids[i] as u8))
     }
 }

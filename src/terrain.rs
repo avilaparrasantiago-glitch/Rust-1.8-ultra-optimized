@@ -186,18 +186,18 @@ impl Generator {
 }
 
 impl Template {
-    pub(crate) fn dimension(seed: i64, radius: i32, dim: crate::overworld::Dimension) -> Self {
-        let g = crate::overworld::DimensionTerrain::new(seed, dim);
+    pub(crate) fn dimension(
+        g: &crate::overworld::DimensionTerrain,
+        radius: i32,
+        dim: crate::overworld::Dimension,
+    ) -> Self {
         let end = dim == crate::overworld::Dimension::End;
         let center = if end { 100 >> 4 } else { 0 };
         let mut template = Self {
             spawn_hint: None,
             columns: (center - radius..=center + radius)
                 .into_par_iter()
-                .flat_map_iter(|x| {
-                    let g = &g;
-                    (-radius..=radius).map(move |z| ((x, z), g.column(x, z)))
-                })
+                .flat_map_iter(|x| (-radius..=radius).map(move |z| ((x, z), g.column(x, z))))
                 .collect(),
         };
         template.spawn_hint = if end {
@@ -219,7 +219,11 @@ impl Template {
         template
     }
     pub fn overworld(seed: i64, radius: i32) -> Self {
-        let provider = crate::overworld::Overworld::new(seed);
+        Self::overworld_revision(seed, radius, 2)
+    }
+    pub(crate) fn overworld_revision(seed: i64, radius: i32, revision: u32) -> Self {
+        let mut provider = crate::overworld::Overworld::new(seed);
+        provider.structures = revision >= 2;
         let spawn = provider.spawn();
         let (sx, sz) = (spawn[0] >> 4, spawn[2] >> 4);
         let columns = (sx - radius..=sx + radius)

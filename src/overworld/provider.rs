@@ -1,6 +1,7 @@
 use super::{Biomes, JavaRandom, Octaves, simplex::Simplex};
 
 pub struct Overworld {
+    pub(crate) structures: bool,
     pub(super) seed: i64,
     pub biomes: Biomes,
     lower: Octaves,
@@ -90,6 +91,7 @@ impl Overworld {
         let depth = Octaves::from_random(&mut rng, 16);
         Self {
             seed,
+            structures: true,
             biomes: Biomes::new(seed),
             lower,
             upper,

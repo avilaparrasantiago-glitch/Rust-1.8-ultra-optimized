@@ -232,6 +232,7 @@ fn encode_column(
     pos: ColumnPos,
     col: &Column,
     changes: Option<&BTreeMap<BlockPos, u16>>,
+    generated_entities: Vec<Value>,
 ) -> io::Result<Vec<u8>> {
     if changes.is_none_or(|c| c.is_empty()) && !col.nbt.is_empty() {
         return Ok(col.nbt.clone());
@@ -250,7 +251,7 @@ fn encode_column(
     level.insert("Biomes".into(), array(&col.biomes));
     level
         .entry("Entities".into())
-        .or_insert_with(|| Value::List(vec![]));
+        .or_insert(Value::List(generated_entities));
     level
         .entry("TileEntities".into())
         .or_insert_with(|| Value::List(vec![]));
@@ -338,6 +339,99 @@ fn encode_column(
     fastnbt::to_bytes(&root).map_err(io::Error::other)
 }
 
+pub(crate) fn store_end_crystals(
+    template: &mut Template,
+    provider: &crate::overworld::DimensionTerrain,
+    seed: i64,
+) -> io::Result<()> {
+    let mut groups = BTreeMap::<ColumnPos, Vec<Value>>::new();
+    for spike in provider.spikes() {
+        let [x, y, z] = spike.bedrock();
+        use md5::{Digest, Md5};
+        let digest = Md5::digest(format!("EnderCrystal/{seed}/{x}/{y}/{z}").as_bytes());
+        let uuid = uuid::Builder::from_md5_bytes(digest.into())
+            .into_uuid()
+            .as_u128();
+        let fields = [
+            ("id", Value::String("EnderCrystal".into())),
+            (
+                "Pos",
+                Value::List(spike.crystal().map(Value::Double).to_vec()),
+            ),
+            ("Motion", Value::List(vec![Value::Double(0.); 3])),
+            (
+                "Rotation",
+                Value::List(vec![Value::Float(spike.crystal_yaw), Value::Float(0.)]),
+            ),
+            ("UUIDMost", Value::Long((uuid >> 64) as i64)),
+            ("UUIDLeast", Value::Long(uuid as i64)),
+            ("Air", Value::Short(300)),
+            ("Dimension", Value::Int(1)),
+            ("Fire", Value::Short(0)),
+            ("FallDistance", Value::Float(0.)),
+            ("OnGround", Value::Byte(0)),
+            ("PortalCooldown", Value::Int(0)),
+            ("Invulnerable", Value::Byte(0)),
+        ];
+        groups
+            .entry((x >> 4, z >> 4))
+            .or_default()
+            .push(Value::Compound(
+                fields.into_iter().map(|(k, v)| (k.into(), v)).collect(),
+            ));
+    }
+    for (pos, entities) in groups {
+        let col = template
+            .columns
+            .entry(pos)
+            .or_insert_with(|| provider.column(pos.0, pos.1));
+        col.nbt = encode_column(pos, col, None, entities)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn load_end_crystals(
+    template: &Template,
+    entities: &mut crate::entities::EntityArena,
+) -> io::Result<()> {
+    #[derive(serde::Deserialize)]
+    struct Root {
+        #[serde(rename = "Level")]
+        level: Level,
+    }
+    #[derive(serde::Deserialize)]
+    struct Level {
+        #[serde(rename = "Entities", default)]
+        entities: Vec<SavedEntity>,
+    }
+    #[derive(serde::Deserialize)]
+    struct SavedEntity {
+        id: String,
+        #[serde(rename = "Pos")]
+        pos: [f64; 3],
+        #[serde(rename = "Rotation")]
+        rotation: [f32; 2],
+    }
+    for col in template.columns.values().filter(|c| !c.nbt.is_empty()) {
+        let root: Root = fastnbt::from_bytes(&col.nbt).map_err(io::Error::other)?;
+        for e in root.level.entities {
+            if e.id == "EnderCrystal" {
+                entities
+                    .insert(crate::entities::Entity {
+                        kind: crate::entities::EntityKind::EndCrystal {
+                            yaw: (e.rotation[0] * 256. / 360.) as i32 as u8,
+                        },
+                        position: e.pos,
+                        velocity: [0.; 3],
+                        age: 0,
+                    })
+                    .map_err(|_| invalid("End crystals exceed entity capacity"))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The destination directory belongs to this template. Each published region is a complete snapshot.
 pub fn export(dir: &Path, template: &Template, edits: &Edits) -> io::Result<()> {
     std::fs::create_dir_all(dir)?;
@@ -367,7 +461,7 @@ pub fn export(dir: &Path, template: &Template, edits: &Edits) -> io::Result<()> 
         file.write_all(&header)?;
         let mut sector = 2usize;
         for (pos, col) in cols {
-            let raw = encode_column(pos, col, edits.get(&pos))?;
+            let raw = encode_column(pos, col, edits.get(&pos), Vec::new())?;
             scratch.resize(compressor.zlib_compress_bound(raw.len()), 0);
             let n = compressor
                 .zlib_compress(&raw, &mut scratch)

@@ -29,7 +29,8 @@ impl Generation {
     pub(super) fn new(
         seed: i64,
         legacy: bool,
-        dim: Option<crate::overworld::Dimension>,
+        revision: u32,
+        dimension: Option<Arc<crate::overworld::DimensionTerrain>>,
         metrics: Arc<Metrics>,
     ) -> io::Result<Self> {
         let (jobs, rx) = bounded::<(ColumnPos, Arc<AtomicBool>)>(CAPACITY);
@@ -38,9 +39,11 @@ impl Generation {
             .name("overworld-generator".into())
             .spawn(move || {
                 let generator = Generator(seed as u64);
-                let dimension = dim.map(|d| crate::overworld::DimensionTerrain::new(seed, d));
-                let overworld =
-                    (!legacy && dim.is_none()).then(|| crate::overworld::Overworld::new(seed));
+                let overworld = (!legacy && dimension.is_none()).then(|| {
+                    let mut provider = crate::overworld::Overworld::new(seed);
+                    provider.structures = revision >= 2;
+                    provider
+                });
                 for (pos, wanted) in rx {
                     let col = wanted.load(Ordering::Acquire).then(|| {
                         let start = Instant::now();
@@ -129,9 +132,28 @@ mod tests {
     fn returning_to_same_coordinates_cannot_publish_other_dimensions_work() {
         use crate::overworld::Dimension;
         let pos = (9, -7);
-        let mut hell =
-            Generation::new(12345, false, Some(Dimension::Nether), Arc::default()).unwrap();
-        let mut end = Generation::new(12345, false, Some(Dimension::End), Arc::default()).unwrap();
+        let mut hell = Generation::new(
+            12345,
+            false,
+            2,
+            Some(Arc::new(crate::overworld::DimensionTerrain::new(
+                12345,
+                Dimension::Nether,
+            ))),
+            Arc::default(),
+        )
+        .unwrap();
+        let mut end = Generation::new(
+            12345,
+            false,
+            2,
+            Some(Arc::new(crate::overworld::DimensionTerrain::new(
+                12345,
+                Dimension::End,
+            ))),
+            Arc::default(),
+        )
+        .unwrap();
         let mut first = Template::flat(0);
         let mut second = Template::flat(0);
         hell.request(pos);
@@ -166,12 +188,15 @@ mod tests {
             hell.collect(&mut first);
             std::thread::yield_now();
         }
-        assert_eq!(first.columns[&pos].packet(pos).body(), before_eviction.body());
+        assert_eq!(
+            first.columns[&pos].packet(pos).body(),
+            before_eviction.body()
+        );
     }
 
     #[test]
     fn abandoned_work_is_bounded_discarded_and_retryable() {
-        let mut queue = Generation::new(9581, false, None, Arc::default()).unwrap();
+        let mut queue = Generation::new(9581, false, 2, None, Arc::default()).unwrap();
         let mut cache = Template::flat(3);
         for x in 0..64 {
             queue.request((x, 9));

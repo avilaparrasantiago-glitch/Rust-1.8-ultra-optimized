@@ -405,6 +405,91 @@ class PlayTests(unittest.TestCase):
                     if dimension == 0:
                         self.assertEqual(bulk, first)
 
+    def test_end_crystal_pillar_reopens(self):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "seed").write_text("12345")
+            region = Path(directory, "end", "region")
+            settings = dict(arena_file=None, terrain="normal", worlds=["lobby","end"],
+                            persistent_worlds=["end"], dimensions={"end":"end"}, data_dir=directory,
+                            operators={str(uuid.UUID(bytes=hashlib.md5(f"OfflinePlayer:{n}".encode()).digest(),
+                                                     version=3)): 4 for n in ("Alice", "Bob")})
+            for name in ("Alice", "Bob"):
+                with server(**settings) as (port, _):
+                    c = self.client(port)
+                    c.login(name)
+                    c.confirm_pos()
+                    c.chat("/world tp end")
+                    c.until(7, lambda b: struct.unpack_from(">i", b)[0] == 1)
+                    c.confirm_pos()
+                    c.chat(f"/tp {name} 3.5 93 -80.5")
+                    c.confirm_pos()
+                    def crystal(b):
+                        offset = number(b)[1]
+                        return (b[offset] == 51 and struct.unpack_from(">iii", b, offset+1)
+                                == (112,2944,-2576))
+                    c.until(0x0e, crystal)
+                    for y, block in [(92,7),(91,49)]:
+                        c.chat(f"/testforblock 3 {y} -81 {block}")
+                        c.until(2, lambda b: "Block matches" in text_at(b)[0])
+                    c.chat("/save-all")
+                    deadline = time.monotonic() + 10
+                    while not (region / "generated.edits").exists():
+                        self.assertLess(time.monotonic(),deadline)
+                        time.sleep(.05)
+                    self.assertEqual(json.loads((region / "generator.json").read_text())["revision"],2)
+                    # The crystal is outside the spawn template. Check its actual Anvil column.
+                    with (region / "r.0.-1.mca").open("rb") as f:
+                        f.seek(4 * ((-6 & 31) * 32))
+                        sector = int.from_bytes(f.read(3), "big")
+                        self.assertGreater(sector, 1)
+                        f.seek(4096 * sector)
+                        size = int.from_bytes(f.read(4), "big")
+                        self.assertEqual(f.read(1), b"\x02")
+                        raw = zlib.decompress(f.read(size - 1))
+                    self.assertEqual(raw.count(b"EnderCrystal"), 1)
+                    self.assertIn(struct.pack(">ddd",3.5,92.0,-80.5),raw)
+                    c.s.close()
+
+    def test_end_before_decoration_keeps_its_generator(self):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "seed").write_text("12345")
+            region = Path(directory, "end", "region")
+            region.mkdir(parents=True)
+            marker = dict(dimension=1, algorithm="syrust-default-1.8", revision=1, options="", seed=12345)
+            (region / "generator.json").write_text(json.dumps(marker))
+            with server(arena_file=None, terrain="normal", worlds=["lobby","end"],
+                        persistent_worlds=["end"], dimensions={"end":"end"}, data_dir=directory) as (port,_):
+                c = self.client(port)
+                c.login("Alice")
+                c.confirm_pos()
+                c.chat("/world tp end")
+                c.until(7, lambda b: struct.unpack_from(">i", b)[0] == 1)
+                c.confirm_pos()
+                c.chat("/tp Alice 3.5 93 -80.5")
+                c.confirm_pos()
+                c.until(0x21, lambda b: struct.unpack_from(">ii", b) == (0,-6) and b[9:11] != bytes(2))
+                c.chat("/testforblock 3 92 -81 0")
+                c.until(2, lambda b: "Block matches" in text_at(b)[0])
+                self.assertEqual(json.loads((region / "generator.json").read_text()),marker)
+
+    def test_nether_fortress_is_served_to_players(self):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "seed").write_text("12345")
+            with server(arena_file=None, terrain="normal", worlds=["lobby","hell"],
+                        dimensions={"hell":"nether"},data_dir=directory) as (port,_):
+                c = self.client(port)
+                c.login("Alice")
+                c.confirm_pos()
+                c.chat("/world tp hell")
+                c.until(7,lambda b:struct.unpack_from(">i",b)[0] == -1)
+                c.confirm_pos()
+                for x,y,z,block,meta in [(365,58,-898,52,0),(-330,61,-762,54,3)]:
+                    c.chat(f"/tp Alice {x}.5 {y+1} {z}.0")
+                    c.confirm_pos()
+                    c.until(0x21,lambda b: struct.unpack_from(">ii",b) == (x>>4,z>>4) and b[9:11] != bytes(2))
+                    c.chat(f"/testforblock {x} {y} {z} {block} {meta}")
+                    c.until(2,lambda b:"Block matches" in text_at(b)[0])
+
     def test_queue_promotion(self):
         with server(max_players=1) as (port, _):
             a = self.client(port)

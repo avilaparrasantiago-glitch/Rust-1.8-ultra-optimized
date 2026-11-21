@@ -21,6 +21,7 @@ pub enum EntityKind {
     Item(Stack),
     Orb { value: u16 },
     Arrow,
+    EndCrystal { yaw: u8 },
     Mob { kind: u8 },
 }
 

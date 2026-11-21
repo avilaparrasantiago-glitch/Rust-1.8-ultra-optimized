@@ -304,29 +304,62 @@ impl Manager {
             Some(crate::overworld::Dimension::Nether) => -1,
             Some(crate::overworld::Dimension::End) => 1,
         };
-        let template = match dim {
-            Some(d) => Arc::new(Template::dimension(
+        let persistent = self.cfg.persistent_worlds.iter().any(|s| s == name);
+        let dir = self.cfg.data_dir.join(name).join("region");
+        let revision = match (normal || dimension != 0, persistent) {
+            (true, true) => crate::persistence::Store::dimension_revision(&dir)?,
+            (true, false) => 2,
+            _ => 1,
+        };
+        let provider = dim.map(|kind| {
+            let mut terrain = crate::overworld::DimensionTerrain::new(self.seed, kind);
+            if revision == 1 {
+                terrain.use_undecorated_terrain();
+            }
+            Arc::new(terrain)
+        });
+        let template = match provider.as_deref().zip(dim) {
+            Some((provider, d)) => {
+                let mut t = Template::dimension(provider, i32::from(self.cfg.view_distance) + 1, d);
+                if d == crate::overworld::Dimension::End && revision == 2 {
+                    crate::anvil::store_end_crystals(&mut t, provider, self.seed)?;
+                }
+                Arc::new(t)
+            }
+            None if normal && revision == 1 => Arc::new(Template::overworld_revision(
                 self.seed,
                 i32::from(self.cfg.view_distance) + 1,
-                d,
+                1,
             )),
             None => self.template.clone(),
         };
-        let (store, template, edits, legacy) =
-            if self.cfg.persistent_worlds.iter().any(|s| s == name) {
-                let (s, t, edits) = crate::persistence::Store::open(
-                    &self.cfg.data_dir.join(name).join("region"),
-                    template,
-                    normal.then_some(self.seed),
-                    dimension,
-                )?;
-                let legacy = s.legacy;
-                (Some(s), t, edits, legacy)
-            } else {
-                (None, template, Default::default(), false)
-            };
+        let (store, template, edits, legacy) = if persistent {
+            let (s, t, edits) = crate::persistence::Store::open(
+                &dir,
+                template,
+                normal.then_some(self.seed),
+                dimension,
+                revision,
+            )?;
+            let legacy = s.legacy;
+            (Some(s), t, edits, legacy)
+        } else {
+            (None, template, Default::default(), false)
+        };
+        let mut entities = EntityArena::with_capacity(ENTITIES_PER_ROOM);
+        if dimension == 1 && revision == 2 {
+            crate::anvil::load_end_crystals(&template, &mut entities)?;
+        }
         let generation = normal
-            .then(|| generation::Generation::new(self.seed, legacy, dim, self.metrics.clone()))
+            .then(|| {
+                generation::Generation::new(
+                    self.seed,
+                    legacy,
+                    revision,
+                    provider,
+                    self.metrics.clone(),
+                )
+            })
             .transpose()?;
         let mut world = World::new(name.into(), template);
         world.edits = edits;
@@ -354,7 +387,7 @@ impl Manager {
                     local,
                     players: Vec::new(),
                     last_bulk: None,
-                    entities: EntityArena::with_capacity(ENTITIES_PER_ROOM),
+                    entities,
                     tick: 0,
                     signs: HashMap::new(),
                     time: 0,

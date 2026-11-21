@@ -6,6 +6,8 @@ pub enum Dimension {
     End,
 }
 pub struct DimensionTerrain {
+    populated: bool,
+    spikes: std::sync::OnceLock<Vec<super::EndSpike>>,
     seed: i64,
     surface: Option<(Octaves, Octaves)>,
     kind: Dimension,
@@ -91,8 +93,15 @@ impl DimensionTerrain {
         blocks
     }
     pub(crate) fn column(&self, cx: i32, cz: i32) -> crate::arena::Column {
+        let mut blocks = self.provide(cx, cz);
+        if self.kind == Dimension::Nether && self.populated {
+            super::fortress::paint_column(self.seed, cx, cz, &mut blocks);
+        }
+        for spike in self.spikes() {
+            spike.write_column(cx, cz, &mut blocks);
+        }
         let mut col = super::column::pack(
-            &self.provide(cx, cz),
+            &blocks,
             [if matches!(self.kind, Dimension::End) {
                 9
             } else {
@@ -116,6 +125,8 @@ impl DimensionTerrain {
     pub fn new(seed: i64, kind: Dimension) -> Self {
         let mut r = JavaRandom::new(seed);
         Self {
+            populated: true,
+            spikes: Default::default(),
             seed,
             kind,
             lower: Octaves::from_random(&mut r, 16),
@@ -128,6 +139,18 @@ impl DimensionTerrain {
                 )
             }),
         }
+    }
+    pub fn spikes(&self) -> &[super::EndSpike] {
+        if self.kind == Dimension::End {
+            self.spikes
+                .get_or_init(|| super::spikes::island_spikes(self, self.seed))
+        } else {
+            &[]
+        }
+    }
+    pub(crate) fn use_undecorated_terrain(&mut self) {
+        self.populated = false;
+        self.spikes.get_or_init(Vec::new);
     }
     /// Unpopulated primer in section wire order, before surface replacement or carving.
     pub fn terrain(&self, cx: i32, cz: i32) -> Vec<u16> {

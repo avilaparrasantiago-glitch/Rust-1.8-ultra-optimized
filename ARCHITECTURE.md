@@ -2,6 +2,12 @@
 
 SyRust is an independent Rust project. Use only the Minecraft references supplied by the project owner. The external Coral repository is excluded as a source of code, design and documentation.
 
+### Local references and the published repository
+
+Keep Java sources, compiled classes, JARs and other JVM reference artifacts in the Git-ignored directory `FONTS EXTRAS/`. Keep comparison tools written in languages outside the project stack there as well. Before publishing, check the Git index for these files, including any previously tracked copies. The published tree contains the Rust implementation, the native integrations and scripting technologies specified here, and the data the engine needs to build and run.
+
+Track [checklist.md](checklist.md) in Git. When a roadmap task or its status changes, update the checklist in the same commit as [ROADMAP.md](ROADMAP.md) so GitHub shows the same status in both documents.
+
 You are tasked with architecting and advancing SyRust, a next-generation Minecraft 1.8.8 / 1.8.9 (Protocol 47) server engine and distributed network ecosystem written in Rust with strategic low-level native integrations. The foundational network stack, chunk packet lightweight bitmask optimizations, dynamic spawn calculation, persistent seed, and basic command/chat routing are already established.
 
 

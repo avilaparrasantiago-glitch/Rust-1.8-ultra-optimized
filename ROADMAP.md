@@ -4,6 +4,8 @@ SyRust es un proyecto propio. Usar exclusivamente las fuentes de Minecraft que e
 
 Documento vivo. Registra el estado comprobado por área (con evidencia archivo:línea) y las tareas atómicas pendientes, ordenadas por dependencias. Se actualiza al cerrar cada bloque con lo que cambió, la evidencia y el siguiente bloque.
 
+Consulta [checklist.md](checklist.md) para ver las tareas por fase y los criterios de cierre. Al añadir, cerrar o reabrir un punto, actualiza su casilla en el mismo commit que este roadmap. Deja abiertos los puntos parciales o pendientes de verificación. Publica ambos archivos juntos en GitHub.
+
 Reglas de bloque (AGENTS.md): una tarea atómica por iteración, TDD, sin `.unwrap()`/`.expect()` en rutas de red/tick, cero alloc en heap en el loop de 20 TPS, `cargo check` + `clippy -D warnings` + `nextest` obligatorios antes de cerrar, commit por bloque.
 
 ---
@@ -268,3 +270,5 @@ Se conservan íntegros como material de estudio. La regla de paridad anterior de
 ## Referencias locales
 
 Las fuentes y clases Java, los clientes de comparación y las herramientas auxiliares de Python y Bash se conservan en la carpeta local `FONTS EXTRAS`. Las rutas históricas de esas herramientas se interpretan desde esa carpeta. Las dos tablas de geometría en src/overworld forman parte de los datos del motor Rust.
+
+Guarda también en esa carpeta los JAR, los demás derivados de la JVM y cualquier herramienta de comparación que use tecnologías ajenas a [ARCHITECTURE.md](ARCHITECTURE.md#local-references-and-the-published-repository). Antes de publicar, revisa el índice de Git para comprobar que excluye ese material, incluso si alguna copia ya estaba versionada, y que incluye `checklist.md`.

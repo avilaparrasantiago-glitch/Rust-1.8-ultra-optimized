@@ -126,6 +126,19 @@ impl JavaRandom {
     }
 }
 
+/// Seed passed to Random.setSeed at the start of ChunkProviderGenerate.populate.
+pub fn population_seed(world: i64, chunk_x: i32, chunk_z: i32) -> i64 {
+    let mut random = JavaRandom::new(world);
+    // Java divides signed longs toward zero before doubling them again.
+    let mut odd = || (random.long() / 2 * 2).wrapping_add(1);
+    let x_seed = odd();
+    let z_seed = odd();
+    i64::from(chunk_x)
+        .wrapping_mul(x_seed)
+        .wrapping_add(i64::from(chunk_z).wrapping_mul(z_seed))
+        ^ world
+}
+
 /// MapGenMineshaft's DEFAULT start predicate, before constructing any pieces.
 pub fn mineshaft_start(seed: i64, x: i32, z: i32) -> bool {
     let mut world = JavaRandom::new(seed);
@@ -202,6 +215,21 @@ impl StructureGrid {
 mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
+
+    #[test]
+    fn official_population_seeds() {
+        // setSeed and the first nextInt(4) in 1.8.9 aoa.populate, structures off.
+        for (world, x, z, seed, first) in [
+            (12345, -1, 0, -6674089274190693130, 3),
+            (-9581, 0, -1, -7679664831557963206, 3),
+            (12345, -129, 128, -4601265542202375946, 0),
+            (1, 200000, -300000, 7291686953485037985, 2),
+        ] {
+            let actual = population_seed(world, x, z);
+            assert_eq!(actual, seed);
+            assert_eq!(JavaRandom::new(actual).bounded(4), first);
+        }
+    }
 
     #[test]
     fn official_viable_structure_starts() {

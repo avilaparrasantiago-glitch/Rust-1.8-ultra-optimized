@@ -1,0 +1,11 @@
+[19:49:51] [Client thread/INFO]: Setting user: TestJava189
+[19:49:51] [Client thread/INFO]: (Session ID is token:0:00000000000040008000000000000047)
+[19:49:54] [Client thread/INFO]: LWJGL Version: 2.9.4
+[19:49:56] [Client thread/INFO]: Reloading ResourceManager: Default
+[19:49:57] [Sound Library Loader/INFO]: Starting up SoundSystem...
+[19:49:57] [Thread-5/INFO]: Initializing LWJGL OpenAL
+[19:49:57] [Thread-5/INFO]: (The LWJGL binding of OpenAL.  For more information, see http://www.lwjgl.org)
+[19:49:58] [Thread-5/INFO]: OpenAL initialized.
+[19:49:58] [Sound Library Loader/INFO]: Sound engine started
+[19:50:02] [Client thread/INFO]: Created: 512x512 textures-atlas
+[19:50:04] [Client thread/INFO]: Connecting to 192.168.1.150, 25567

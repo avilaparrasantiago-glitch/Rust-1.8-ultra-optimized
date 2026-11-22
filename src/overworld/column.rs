@@ -84,6 +84,7 @@ pub(super) fn pack(states: &[u16], biomes: [u8; 256]) -> Column {
         );
     }
     Column {
+        spawners: Vec::new(),
         skylight: true,
         sections,
         biomes,

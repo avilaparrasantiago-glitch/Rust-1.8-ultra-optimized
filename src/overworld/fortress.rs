@@ -310,7 +310,7 @@ fn assemble(cx: i32, cz: i32, mut rng: JavaRandom) -> Vec<Piece> {
 
 fn shapes() -> &'static [&'static [u8]; 52] {
     static TABLE: std::sync::OnceLock<[&[u8]; 52]> = std::sync::OnceLock::new();
-    TABLE.get_or_init(||super::temple::rectangles(include_bytes!("fortress-shapes.bin")))
+    TABLE.get_or_init(|| super::temple::rectangles(include_bytes!("fortress-shapes.bin")))
 }
 
 impl Piece {
@@ -373,7 +373,10 @@ impl Piece {
             Farm => 12,
             End => unreachable!(),
         };
-        for rect in shapes()[index * 4 + usize::from(self.facing)].as_chunks::<8>().0 {
+        for rect in shapes()[index * 4 + usize::from(self.facing)]
+            .as_chunks::<8>()
+            .0
+        {
             let state = u16::from_be_bytes([rect[6], rect[7]]);
             let (low, high) = (y + i32::from(rect[1] as i8), y + i32::from(rect[4] as i8));
             for pz in (z + i32::from(rect[2])).max(bz)..=(z + i32::from(rect[5])).min(bz + 15) {
@@ -399,7 +402,9 @@ impl Piece {
             let [px, py, pz] = self.absolute(if self.kind == Left { 3 } else { 1 }, 2, 3);
             if px >> 4 == cx && pz >> 4 == cz {
                 let north_wall = shapes()[index * 4 + usize::from(self.facing)]
-                    .as_chunks::<8>().0.iter()
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
                     .any(|r| {
                         let [lx, ly, lz] = [px - x, py - y, pz - 1 - z];
                         (i32::from(r[0])..=i32::from(r[3])).contains(&lx)
@@ -414,18 +419,138 @@ impl Piece {
     }
 }
 
-pub(super) fn paint_column(seed: i64, cx: i32, cz: i32, states: &mut [u16]) {
+fn nearby_layouts(seed: i64, cx: i32, cz: i32, mut visit: impl FnMut(Vec<Piece>)) {
     for rx in ((cx - 10) >> 4)..=((cx + 10) >> 4) {
         for rz in ((cz - 10) >> 4)..=((cz + 10) >> 4) {
             if let Some((x, z, rng)) = candidate(seed, rx, rz)
                 && x.abs_diff(cx) <= 10
                 && z.abs_diff(cz) <= 10
             {
-                for p in assemble(x, z, rng) {
-                    p.paint(cx, cz, states);
+                visit(assemble(x, z, rng));
+            }
+        }
+    }
+}
+
+// Structure population owns the 16x16 window starting eight blocks into the chunk.
+pub(crate) fn population_features(
+    seed: i64,
+    cx: i32,
+    cz: i32,
+    mut visit: impl FnMut([i32; 3], bool),
+) {
+    nearby_layouts(seed, cx, cz, |pieces| {
+        for p in pieces {
+            let point = if p.chest {
+                p.absolute(if p.kind == Left { 3 } else { 1 }, 2, 3)
+            } else if p.kind == Entrance {
+                p.absolute(6, 5, 6)
+            } else {
+                continue;
+            };
+            if ((point[0] - 8) >> 4, (point[2] - 8) >> 4) == (cx, cz) {
+                visit(point, p.chest);
+            }
+        }
+    });
+}
+pub(super) fn paint_column(
+    seed: i64,
+    cx: i32,
+    cz: i32,
+    states: &mut [u16],
+) -> Vec<crate::arena::BlockPos> {
+    let mut spawners = Vec::new();
+    nearby_layouts(seed, cx, cz, |pieces| {
+        for p in pieces {
+            p.paint(cx, cz, states);
+            if p.kind == Throne {
+                let [x, y, z] = p.absolute(3, 5, 5);
+                if (x >> 4, z >> 4) == (cx, cz) {
+                    spawners.push((x, y as u8, z));
                 }
             }
         }
+    });
+    spawners
+}
+
+/// Inclusive vertical and horizontal bounds used by ChunkProviderHell's monster list.
+/// A position inside a piece qualifies on any floor. Gaps inside the enclosing
+/// fortress qualify only when the block directly underneath is nether brick.
+pub struct FortressSpawnArea {
+    column: (i32, i32),
+    pieces: Vec<[i32; 6]>,
+    enclosures: Vec<[i32; 6]>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpawnListEntry {
+    pub entity: &'static str,
+    pub weight: u8,
+    pub min_group: u8,
+    pub max_group: u8,
+}
+const fn spawn(entity: &'static str, weight: u8, min_group: u8, max_group: u8) -> SpawnListEntry {
+    SpawnListEntry {
+        entity,
+        weight,
+        min_group,
+        max_group,
+    }
+}
+// Nether skeletons choose their wither subtype during entity initialization.
+const MONSTERS: [SpawnListEntry; 4] = [
+    spawn("Blaze", 10, 2, 3),
+    spawn("PigZombie", 5, 4, 4),
+    spawn("Skeleton", 10, 4, 4),
+    spawn("LavaSlime", 3, 4, 4),
+];
+
+impl FortressSpawnArea {
+    pub fn for_column(seed: i64, cx: i32, cz: i32) -> Self {
+        let mut area = Self {
+            column: (cx, cz),
+            pieces: Vec::new(),
+            enclosures: Vec::new(),
+        };
+        let intersects =
+            |b: [i32; 6]| cx >= b[0] >> 4 && cx <= b[3] >> 4 && cz >= b[2] >> 4 && cz <= b[5] >> 4;
+        nearby_layouts(seed, cx, cz, |pieces| {
+            let mut enclosure = pieces[0].bounds;
+            for piece in pieces {
+                let b = piece.bounds;
+                for axis in 0..3 {
+                    enclosure[axis] = enclosure[axis].min(b[axis]);
+                    enclosure[axis + 3] = enclosure[axis + 3].max(b[axis + 3]);
+                }
+                if intersects(b) {
+                    area.pieces.push(b);
+                }
+            }
+            if intersects(enclosure) {
+                area.enclosures.push(enclosure);
+            }
+        });
+        area
+    }
+
+    pub fn monsters_at(&self, pos: [i32; 3], floor_state: u16) -> &'static [SpawnListEntry] {
+        if self.uses_fortress_monsters(pos, floor_state) {
+            &MONSTERS
+        } else {
+            &[]
+        }
+    }
+    pub fn uses_fortress_monsters(&self, [x, y, z]: [i32; 3], floor_state: u16) -> bool {
+        if (x >> 4, z >> 4) != self.column {
+            return false;
+        }
+        let contains = |b: &[i32; 6]| {
+            x >= b[0] && x <= b[3] && y >= b[1] && y <= b[4] && z >= b[2] && z <= b[5]
+        };
+        self.pieces.iter().any(contains)
+            || (floor_state >> 4 == 112 && self.enclosures.iter().any(contains))
     }
 }
 
@@ -433,6 +558,40 @@ pub(super) fn paint_column(seed: i64, cx: i32, cz: i32, states: &mut [u16]) {
 mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
+    #[test]
+    fn fortress_spawn_bounds_from_official_piece_boxes() {
+        for (cx, cz, expected) in [
+            (
+                20,
+                -54,
+                "1aebc1b8ca43c9112484761a9f83e306c4d008ba235e478c51fc2cde5bb661b3",
+            ),
+            (
+                -25,
+                -41,
+                "df0325bbcac3eb3493117a95c8d8941579198d8cf216d6d64b96712fd2a159ec",
+            ),
+        ] {
+            let mut hash = Sha256::new();
+            let mut row = [0u8; 16];
+            for z in cz - 9..=cz + 9 {
+                for x in cx - 9..=cx + 9 {
+                    let area = FortressSpawnArea::for_column(12345, x, z);
+                    for y in 0..128 {
+                        for dz in 0..16 {
+                            for (dx, byte) in row.iter_mut().enumerate() {
+                                let pos = [16 * x + dx as i32, y, 16 * z + dz];
+                                *byte = u8::from(area.uses_fortress_monsters(pos, 112 << 4))
+                                    | (u8::from(area.uses_fortress_monsters(pos, 87 << 4)) << 1);
+                            }
+                            hash.update(row);
+                        }
+                    }
+                }
+            }
+            assert_eq!(format!("{:x}", hash.finalize()), expected);
+        }
+    }
     #[test]
     fn official_fortress_blocks_in_negative_region() {
         let provider =

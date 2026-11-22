@@ -109,6 +109,7 @@ impl Section {
 }
 
 pub(crate) struct Column {
+    pub(crate) spawners: Vec<crate::anvil::Spawner>,
     pub(crate) skylight: bool,
     pub(crate) sections: BTreeMap<u8, Section>,
     pub(crate) biomes: [u8; 256],
@@ -170,6 +171,7 @@ impl Template {
                 columns.insert(
                     (x, z),
                     Column {
+                        spawners: Vec::new(),
                         skylight: true,
                         sections: BTreeMap::from([(0, section)]),
                         biomes: [1; 256],
@@ -206,8 +208,15 @@ impl Template {
                 }
             }
             buf.extend_from_slice(&col.biomes);
-            buf.put_u32(col.nbt.len() as u32);
-            buf.extend_from_slice(&col.nbt);
+            let generated;
+            let nbt = if col.nbt.is_empty() && !col.spawners.is_empty() {
+                generated = crate::anvil::generated_nbt((x, z), col)?;
+                &generated
+            } else {
+                &col.nbt
+            };
+            buf.put_u32(nbt.len() as u32);
+            buf.extend_from_slice(nbt);
             if buf.len() > MAX_TEMPLATE {
                 return Err(invalid("arena exceeds size limit"));
             }
@@ -265,6 +274,7 @@ impl Template {
                 .insert(
                     pos,
                     Column {
+                        spawners: crate::anvil::saved_spawners(pos, &nbt)?,
                         skylight: true,
                         sections,
                         biomes,

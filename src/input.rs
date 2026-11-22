@@ -19,6 +19,7 @@ pub enum Action {
     },
     Dig(u8, BlockPos),
     Place(BlockPos, u8),
+    UseHeld,
     Held(u8),
     Ability(bool),
     Attack(i32),
@@ -155,7 +156,7 @@ pub fn decode(data: &[u8]) -> io::Result<Action> {
             stack(&mut r)?;
             r.take(3)?;
             if face == 255 {
-                Action::Ignore
+                Action::UseHeld
             } else if face <= 5 {
                 Action::Place(unpacked(raw)?, face)
             } else {

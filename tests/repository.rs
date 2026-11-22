@@ -21,6 +21,11 @@ fn git_keeps_project_files_and_ignores_local_artifacts() -> Result<(), Box<dyn E
         "Cargo.lock",
         "src/main.rs",
         "tests/protocol47.py",
+        "FONTS EXTRAS/notes.md",
+        "tools/Reference.java",
+        "tools/Reference.class",
+        "server.jar",
+        "linux/coral_xdp.c",
         "data/seed",
         "target/debug/syrust",
         "server.log",
@@ -45,12 +50,7 @@ fn git_keeps_project_files_and_ignores_local_artifacts() -> Result<(), Box<dyn E
     );
     assert_eq!(
         String::from_utf8(files.stdout)?.lines().collect::<Vec<_>>(),
-        [
-            ".gitignore",
-            "Cargo.lock",
-            "src/main.rs",
-            "tests/protocol47.py"
-        ]
+        [".gitignore", "Cargo.lock", "linux/coral_xdp.c", "src/main.rs"]
     );
     Ok(())
 }

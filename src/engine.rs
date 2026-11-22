@@ -363,6 +363,8 @@ impl Manager {
             .transpose()?;
         let mut world = World::new(name.into(), template);
         world.edits = edits;
+        let strongholds = (normal && !legacy && dimension == 0)
+            .then(|| crate::overworld::Overworld::new(self.seed).stronghold_starts());
         let handle = std::thread::Builder::new()
             .name(format!("world-{name}"))
             .spawn(move || {
@@ -372,6 +374,7 @@ impl Manager {
                     core_affinity::set_for_current(cores[index % cores.len()]);
                 }
                 Room {
+                    strongholds,
                     dimension,
                     end_origin_pending: normal && dimension == 1,
                     world,
@@ -423,6 +426,7 @@ impl Manager {
 }
 
 pub struct Room {
+    strongholds: Option<[(i32, i32); 3]>,
     dimension: i32,
     end_origin_pending: bool,
     generation: Option<generation::Generation>,
@@ -903,6 +907,25 @@ impl Room {
                 player.send(packet);
             }
             player.loaded.insert(col);
+            if let Some(column) = self
+                .world
+                .template
+                .columns
+                .get(&col)
+                .or_else(|| self.world.generated.columns.get(&col))
+            {
+                for spawner in &column.spawners {
+                    if self.world.block(spawner.pos) >> 4 == 52
+                        && !self
+                            .world
+                            .edits
+                            .get(&col)
+                            .is_some_and(|changes| changes.contains_key(&spawner.pos))
+                    {
+                        player.send(spawner.update.clone());
+                    }
+                }
+            }
             if let Some(edits) = self.world.edits.get(&col) {
                 for (&pos, &state) in edits {
                     player.send(p::block(pos, state));
@@ -1056,6 +1079,34 @@ impl Room {
                                 a.send(p::slot(0, slot as i16, a.inv.slots[slot]));
                             }
                             self.notify_script(i, "place", state);
+                        }
+                    }
+                }
+            }
+            Action::UseHeld => {
+                let player = &mut self.players[i];
+                let slot = 36 + usize::from(player.inv.held);
+                if player.hp > 0.
+                    && matches!(player.mode, 0..=2)
+                    && player.inv.slots[slot].is_some_and(|s| s.id == 381)
+                    && let Some(starts) = self.strongholds
+                {
+                    let pos = player.pos;
+                    let target = starts
+                        .map(|(x, z)| [f64::from(x * 16 + 8), 64., f64::from(z * 16 + 8)])
+                        .into_iter()
+                        .min_by(|a, b| distance(pos, *a).total_cmp(&distance(pos, *b)));
+                    if let Some(target) = target {
+                        let mut origin = player.pos;
+                        origin[1] += 0.81;
+                        if self
+                            .entities
+                            .insert(crate::entities::Entity::ender_eye(origin, target))
+                            .is_ok()
+                            && player.mode != 1
+                        {
+                            crate::crafting::consume(&mut player.inv.slots[slot]);
+                            player.send(p::slot(0, slot as i16, player.inv.slots[slot]));
                         }
                     }
                 }

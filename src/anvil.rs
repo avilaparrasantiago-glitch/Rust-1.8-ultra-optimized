@@ -14,6 +14,290 @@ use std::{
 const SECTOR: usize = 4096;
 const MAX_NBT: usize = 4 << 20;
 type Compound = HashMap<String, Value>;
+pub(crate) struct Spawner {
+    pub pos: BlockPos,
+    pub update: crate::wire::Packet,
+    data: Vec<u8>,
+}
+impl Spawner {
+    fn with_update(pos: BlockPos, data: Vec<u8>, client_data: &[u8]) -> Self {
+        use bytes::BufMut;
+        let update = crate::wire::Packet::new(0x35, |w| {
+            w.put_i64(crate::packets::packed(pos));
+            w.put_u8(1);
+            w.extend_from_slice(client_data);
+        });
+        Self { pos, data, update }
+    }
+    pub(crate) fn blaze(pos: BlockPos) -> Self {
+        use bytes::BufMut;
+        fn name(out: &mut Vec<u8>, s: &str) {
+            out.put_u16(s.len() as u16);
+            out.extend_from_slice(s.as_bytes());
+        }
+        let mut data = vec![10, 0, 0]; // NBT root compound; strings below are ASCII.
+        for (key, value) in [("id", "MobSpawner"), ("EntityId", "Blaze")] {
+            data.put_u8(8);
+            name(&mut data, key);
+            name(&mut data, value);
+        }
+        for (key, value) in [("x", pos.0), ("y", i32::from(pos.1)), ("z", pos.2)] {
+            data.put_u8(3);
+            name(&mut data, key);
+            data.put_i32(value);
+        }
+        for (key, value) in [
+            ("Delay", 20),
+            ("MinSpawnDelay", 200),
+            ("MaxSpawnDelay", 800),
+            ("SpawnCount", 4),
+            ("MaxNearbyEntities", 6),
+            ("RequiredPlayerRange", 16),
+            ("SpawnRange", 4),
+        ] {
+            data.put_u8(2);
+            name(&mut data, key);
+            data.put_i16(value);
+        }
+        data.put_u8(0);
+        Self::with_update(pos, data.clone(), &data)
+    }
+}
+
+fn spawners_in_level(pos: ColumnPos, level: &Compound) -> io::Result<Vec<Spawner>> {
+    let mut out = Vec::new();
+    if let Some(Value::List(tiles)) = level.get("TileEntities") {
+        for tile in tiles {
+            let Value::Compound(tag) = tile else {
+                continue;
+            };
+            if !matches!(tag.get("id"),Some(Value::String(id)) if id=="MobSpawner") {
+                continue;
+            }
+            let (Some(Value::Int(x)), Some(Value::Int(y)), Some(Value::Int(z))) =
+                (tag.get("x"), tag.get("y"), tag.get("z"))
+            else {
+                return Err(invalid("missing spawner position"));
+            };
+            let y = u8::try_from(*y).map_err(|_| invalid("invalid spawner height"))?;
+            if (*x >> 4, *z >> 4) != pos {
+                return Err(invalid("spawner outside chunk"));
+            }
+            let mut client_tag = tag.clone();
+            client_tag.remove("SpawnPotentials");
+            let data = fastnbt::to_bytes(tile).map_err(io::Error::other)?;
+            let wire = fastnbt::to_bytes(&client_tag).map_err(io::Error::other)?;
+            out.push(Spawner::with_update((*x, y, *z), data, &wire));
+        }
+    }
+    Ok(out)
+}
+
+pub(crate) fn saved_spawners(pos: ColumnPos, nbt: &[u8]) -> io::Result<Vec<Spawner>> {
+    if nbt.is_empty() {
+        return Ok(Vec::new());
+    }
+    let root = parse(nbt)?;
+    if let Some(Value::Compound(level)) = compound(&root)?.get("Level") {
+        spawners_in_level(pos, level)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+pub(crate) fn generated_nbt(pos: ColumnPos, col: &Column) -> io::Result<Vec<u8>> {
+    encode_column(pos, col, None, Vec::new())
+}
+
+#[cfg(test)]
+mod spawner_tests {
+    use super::*;
+    #[test]
+    fn nether_chests_and_population_reopen_in_both_quadrants() -> io::Result<()> {
+        use crate::overworld::{Dimension, DimensionTerrain, fortress};
+        let seed = 12345;
+        let provider = DimensionTerrain::new(seed, Dimension::Nether);
+        let mut columns = BTreeMap::new();
+        for [x, y, z] in [[-67, 60, -489], [516, 53, 274]] {
+            let pos = (x >> 4, z >> 4);
+            let col = provider.column(pos.0, pos.1);
+            let area = fortress::FortressSpawnArea::for_column(seed, pos.0, pos.1);
+            assert_eq!(
+                area.monsters_at([x, y, z], 0)
+                    .iter()
+                    .map(|e| (e.entity, e.weight, e.min_group, e.max_group))
+                    .collect::<Vec<_>>(),
+                [
+                    ("Blaze", 10, 2, 3),
+                    ("PigZombie", 5, 4, 4),
+                    ("Skeleton", 10, 4, 4),
+                    ("LavaSlime", 3, 4, 4)
+                ]
+            );
+            assert!(area.monsters_at([x, 255, z], 112 << 4).is_empty());
+            let section = &col.sections[&((y >> 4) as u8)];
+            assert!(matches!(
+                section.state(((y & 15) * 256 + (z & 15) * 16 + (x & 15)) as usize),
+                866 | 867
+            ));
+            columns.insert(pos, col);
+        }
+        let base = Template {
+            spawn_hint: None,
+            columns,
+        };
+        let dir = tempfile::tempdir()?;
+        export(dir.path(), &base, &Edits::new())?;
+        let loaded = import(dir.path())?;
+        for (pos, col) in base.columns {
+            let reopened = &loaded.columns[&pos];
+            let original = parse(&col.nbt)?;
+            let actual = parse(&reopened.nbt)?;
+            assert_eq!(original, actual);
+            let level = compound(&compound(&actual)?["Level"])?;
+            let Value::List(tiles) = &level["TileEntities"] else {
+                panic!("missing tiles")
+            };
+            let chest = tiles
+                .iter()
+                .filter_map(|v| compound(v).ok())
+                .find(|t| t["id"] == Value::String("Chest".into()))
+                .unwrap();
+            let Value::List(items) = &chest["Items"] else {
+                panic!("missing inventory")
+            };
+            let expected = if pos == (-5, -31) {
+                [(10, "saddle", 1), (14, "gold_ingot", 2)]
+            } else {
+                [(4, "nether_wart", 7), (22, "iron_horse_armor", 1)]
+            };
+            assert_eq!(items.len(), expected.len());
+            for (item, (slot, id, count)) in items.iter().zip(expected) {
+                let fields = compound(item)?;
+                assert_eq!(fields["Slot"], Value::Byte(slot));
+                assert_eq!(fields["id"], Value::String(format!("minecraft:{id}")));
+                assert_eq!(fields["Count"], Value::Byte(count));
+                assert_eq!(fields["Damage"], Value::Short(0));
+            }
+            let mut quartz = 0;
+            for (sy, section) in col.sections {
+                for i in 0..4096 {
+                    let state = section.state(i);
+                    assert_eq!(state, reopened.sections[&sy].state(i));
+                    quartz += usize::from(state == 153 << 4);
+                }
+            }
+            assert!(quartz > 0);
+        }
+        Ok(())
+    }
+    #[test]
+    fn nether_decorations_and_fluid_ticks_reopen() -> io::Result<()> {
+        use crate::overworld::{Dimension, DimensionTerrain};
+        let provider = DimensionTerrain::new(12345, Dimension::Nether);
+        for sign in [-1, 1] {
+            let mut found = std::collections::BTreeSet::new();
+            let mut columns = BTreeMap::new();
+            let sample = if sign < 0 {
+                [1, 2, 4, 5, 8]
+            } else {
+                [1, 2, 3, 4, 7]
+            };
+            for z in sample {
+                let pos = (sign, z * sign);
+                let col = provider.column(pos.0, pos.1);
+
+                for section in col.sections.values() {
+                    for &state in &section.palette {
+                        if matches!(state >> 4, 39 | 40 | 51 | 89 | 153) {
+                            found.insert(state >> 4);
+                        }
+                    }
+                }
+                if !col.nbt.is_empty()
+                    && compound(&compound(&parse(&col.nbt)?)?["Level"])?.contains_key("TileTicks")
+                {
+                    found.insert(10);
+                }
+                columns.insert(pos, col);
+            }
+            assert_eq!(found.len(), 6);
+            let base = Template {
+                spawn_hint: None,
+                columns,
+            };
+            let dir = tempfile::tempdir()?;
+            export(dir.path(), &base, &Edits::new())?;
+            let reopened = import(dir.path())?;
+            for (pos, col) in base.columns {
+                let loaded = &reopened.columns[&pos];
+                for (sy, section) in col.sections {
+                    for i in 0..4096 {
+                        assert_eq!(section.state(i), loaded.sections[&sy].state(i));
+                    }
+                }
+                let nbt = parse(&loaded.nbt)?;
+                let level = compound(&compound(&nbt)?["Level"])?;
+                if !col.nbt.is_empty() {
+                    let original = parse(&col.nbt)?;
+                    assert_eq!(
+                        compound(&compound(&original)?["Level"])?.get("TileTicks"),
+                        level.get("TileTicks")
+                    );
+                }
+                if let Some(Value::List(ticks)) = level.get("TileTicks") {
+                    assert!(!ticks.is_empty());
+                    for tick in ticks {
+                        let tag = compound(tick)?;
+                        let (Value::Int(x), Value::Int(y), Value::Int(z)) =
+                            (&tag["x"], &tag["y"], &tag["z"])
+                        else {
+                            panic!("missing tick position")
+                        };
+                        assert_eq!((*x >> 4, *z >> 4), pos);
+                        assert_eq!(tag["i"], Value::String("minecraft:flowing_lava".into()));
+                        assert_eq!(tag["t"], Value::Int(10));
+                        assert_eq!(tag["p"], Value::Int(0));
+                        let state = loaded.sections[&((y >> 4) as u8)]
+                            .state(((y & 15) * 256 + (z & 15) * 16 + (x & 15)) as usize);
+                        assert!(matches!(state, 161 | 168));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    #[test]
+    fn fortress_spawner_survives_region_and_arena_roundtrip() -> io::Result<()> {
+        let provider =
+            crate::overworld::DimensionTerrain::new(12345, crate::overworld::Dimension::Nether);
+        let pos = (365 >> 4, -898 >> 4);
+        let base = Template {
+            spawn_hint: None,
+            columns: BTreeMap::from([(pos, provider.column(pos.0, pos.1))]),
+        };
+        let dir = tempfile::tempdir()?;
+        export(dir.path(), &base, &Edits::new())?;
+        let region = import(dir.path())?;
+        let file = dir.path().join("test.car");
+        region.save(&file)?;
+        let arena = Template::load(&file)?;
+        for source in [&base, &region, &arena] {
+            let tiles = &source.columns[&pos].spawners;
+            assert_eq!(tiles.len(), 1);
+            assert_eq!(tiles[0].pos, (365, 58, -898));
+            let tag = parse(&tiles[0].data)?;
+            let fields = compound(&tag)?;
+            assert_eq!(fields["EntityId"], Value::String("Blaze".into()));
+            assert_eq!(fields["SpawnRange"], Value::Short(4));
+            assert_eq!(fields["Delay"], Value::Short(20));
+        }
+        let edits = Edits::from([(pos, BTreeMap::from([((365, 58, -898), 0)]))]);
+        export(dir.path(), &region, &edits)?;
+        assert!(import(dir.path())?.columns[&pos].spawners.is_empty());
+        Ok(())
+    }
+}
 pub type Edits = BTreeMap<ColumnPos, BTreeMap<BlockPos, u16>>;
 
 fn compound(value: &Value) -> io::Result<&Compound> {
@@ -116,6 +400,7 @@ fn column(data: Vec<u8>, pos: ColumnPos) -> io::Result<Column> {
         );
     }
     Ok(Column {
+        spawners: spawners_in_level(pos, level)?,
         skylight: true,
         sections,
         biomes,
@@ -242,19 +527,73 @@ fn encode_column(
     } else {
         compound(&parse(&col.nbt)?)?.clone()
     };
-    let mut level = match root.remove("Level") {
+    let level = match root.remove("Level") {
         Some(Value::Compound(v)) => v,
         _ => Compound::new(),
     };
+    encode_level(pos, col, changes, generated_entities, root, level)
+}
+
+pub(crate) fn store_nether_features(
+    pos: ColumnPos,
+    col: &mut Column,
+    mut chests: Vec<Value>,
+    ticks: BTreeMap<[i32; 3], i32>,
+) {
+    if chests.is_empty() && ticks.is_empty() {
+        return;
+    }
+    chests.extend(
+        col.spawners
+            .iter()
+            .map(|s| parse(&s.data).expect("generated spawner NBT")),
+    );
+    let mut level = Compound::from([("TileEntities".into(), Value::List(chests))]);
+    if !ticks.is_empty() {
+        let tags = ticks
+            .into_iter()
+            .map(|([x, y, z], delay)| {
+                Value::Compound(
+                    [
+                        ("i".into(), Value::String("minecraft:flowing_lava".into())),
+                        ("t".into(), Value::Int(delay)),
+                        ("p".into(), Value::Int(0)),
+                        ("x".into(), Value::Int(x)),
+                        ("y".into(), Value::Int(y)),
+                        ("z".into(), Value::Int(z)),
+                    ]
+                    .into(),
+                )
+            })
+            .collect();
+        level.insert("TileTicks".into(), Value::List(tags));
+    }
+    col.nbt = encode_level(pos, col, None, Vec::new(), Compound::new(), level)
+        .expect("generated Nether column");
+}
+
+fn encode_level(
+    pos: ColumnPos,
+    col: &Column,
+    changes: Option<&BTreeMap<BlockPos, u16>>,
+    generated_entities: Vec<Value>,
+    mut root: Compound,
+    mut level: Compound,
+) -> io::Result<Vec<u8>> {
     level.insert("xPos".into(), Value::Int(pos.0));
     level.insert("zPos".into(), Value::Int(pos.1));
     level.insert("Biomes".into(), array(&col.biomes));
     level
         .entry("Entities".into())
         .or_insert(Value::List(generated_entities));
-    level
-        .entry("TileEntities".into())
-        .or_insert_with(|| Value::List(vec![]));
+    if !level.contains_key("TileEntities") {
+        let tags = col
+            .spawners
+            .iter()
+            .map(|s| parse(&s.data))
+            .collect::<io::Result<Vec<_>>>()?;
+        level.insert("TileEntities".into(), Value::List(tags));
+    }
     level
         .entry("TerrainPopulated".into())
         .or_insert(Value::Byte(1));

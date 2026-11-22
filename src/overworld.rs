@@ -7,6 +7,7 @@ mod mesa;
 pub use carvers::Carver;
 mod dimensions;
 pub mod fortress;
+mod nether_population;
 mod temple;
 mod spikes;
 pub use spikes::{EndSpike, SpikeGenerator};

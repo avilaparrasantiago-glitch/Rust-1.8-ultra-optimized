@@ -82,13 +82,14 @@ fn official_carved_primers() {
         g.replace_blocks_for_biome(x, 0, &ids, &mut blocks);
         Carver::Caves.carve(12345, x, 0, &mut blocks, &ids);
         assert_eq!(hash(&blocks), expected, "caves {x}");
-        if x == 8 {
-            Carver::Ravine.carve(12345, x, 0, &mut blocks, &ids);
-            assert_eq!(
-                hash(&blocks),
-                "b2ec1522c9ff29bd26dbbb5b7c68dd8177c800f93ff93ce50ec12265d604f50c"
-            );
-        }
+        Carver::Ravine.carve(12345, x, 0, &mut blocks, &ids);
+        // The reference ravine pass leaves the two western primers untouched.
+        let after_ravines = if x == 8 {
+            "b2ec1522c9ff29bd26dbbb5b7c68dd8177c800f93ff93ce50ec12265d604f50c"
+        } else {
+            expected
+        };
+        assert_eq!(hash(&blocks), after_ravines, "ravines {x}");
     }
 }
 use syrust_engine::overworld::{Dimension, DimensionTerrain};

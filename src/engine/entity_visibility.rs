@@ -73,7 +73,10 @@ pub(super) fn empty_seen() -> Seen {
 
 fn spawn(id: i32, e: &Entity, pos: [i32; 3]) -> (Packet, Option<Packet>) {
     let packet_id = match e.kind {
-        EntityKind::Item(_) | EntityKind::Arrow | EntityKind::EndCrystal { .. } => 0x0e,
+        EntityKind::Item(_)
+        | EntityKind::Arrow
+        | EntityKind::EndCrystal { .. }
+        | EntityKind::EnderEye { .. } => 0x0e,
         EntityKind::Mob { .. } => 0x0f,
         EntityKind::Orb { .. } => 0x11,
     };
@@ -82,6 +85,7 @@ fn spawn(id: i32, e: &Entity, pos: [i32; 3]) -> (Packet, Option<Packet>) {
         match e.kind {
             EntityKind::Item(_) => w.put_u8(2),
             EntityKind::Arrow => w.put_u8(60),
+            EntityKind::EnderEye { .. } => w.put_u8(72),
             EntityKind::EndCrystal { .. } => w.put_u8(51),
             EntityKind::Mob { kind } => w.put_u8(kind),
             EntityKind::Orb { .. } => {}
@@ -98,7 +102,7 @@ fn spawn(id: i32, e: &Entity, pos: [i32; 3]) -> (Packet, Option<Packet>) {
                 }
                 w.put_u8(0x7f);
             }
-            EntityKind::Arrow | EntityKind::Item(_) => {
+            EntityKind::Arrow | EntityKind::Item(_) | EntityKind::EnderEye { .. } => {
                 w.put_u16(0);
                 w.put_i32(0);
             }

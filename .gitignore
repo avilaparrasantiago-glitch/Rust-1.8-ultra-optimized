@@ -2,3 +2,20 @@
 /data/
 *.log
 __pycache__/
+
+# Material de comparación y herramientas locales
+/FONTS EXTRAS/
+/.codex/config.toml
+*.java
+*.class
+*.jar
+*.war
+*.ear
+*.gradle
+*.gradle.kts
+*.kt
+*.kts
+*.scala
+*.groovy
+*.py
+*.pyc

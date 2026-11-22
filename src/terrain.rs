@@ -176,6 +176,7 @@ impl Generator {
             );
         }
         Column {
+            spawners: Vec::new(),
             skylight: true,
             sections,
             biomes: surface.map(|s| s.biome),

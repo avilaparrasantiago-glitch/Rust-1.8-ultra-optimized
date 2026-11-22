@@ -7,8 +7,14 @@ pub enum Dimension {
 }
 pub struct DimensionTerrain {
     populated: bool,
+    decorations: std::sync::Mutex<
+        std::collections::BTreeMap<
+            (i32, i32),
+            std::sync::Arc<super::nether_population::Decoration>,
+        >,
+    >,
     spikes: std::sync::OnceLock<Vec<super::EndSpike>>,
-    seed: i64,
+    pub(super) seed: i64,
     surface: Option<(Octaves, Octaves)>,
     kind: Dimension,
     lower: Octaves,
@@ -17,6 +23,14 @@ pub struct DimensionTerrain {
 }
 impl DimensionTerrain {
     pub fn provide(&self, cx: i32, cz: i32) -> Vec<u16> {
+        self.surface_and_caves(cx, cz).0
+    }
+    pub(super) fn surface_and_caves(&self, cx: i32, cz: i32) -> (Vec<u16>, JavaRandom) {
+        let mut r = JavaRandom::new(
+            i64::from(cx)
+                .wrapping_mul(341873128712)
+                .wrapping_add(i64::from(cz).wrapping_mul(132897987541)),
+        );
         let mut blocks = self.terrain(cx, cz);
         if let Some((patches, thickness)) = &self.surface {
             let mut sand = [0.; 256];
@@ -35,11 +49,7 @@ impl DimensionTerrain {
                 [0.03125, 1., 0.03125],
             );
             thickness.fill(&mut depth, [cx * 16, cz * 16, 0], [16, 16, 1], [0.0625; 3]);
-            let mut r = JavaRandom::new(
-                i64::from(cx)
-                    .wrapping_mul(341873128712)
-                    .wrapping_add(i64::from(cz).wrapping_mul(132897987541)),
-            );
+
             for z in 0..16 {
                 for x in 0..16 {
                     let i = x + 16 * z;
@@ -90,12 +100,55 @@ impl DimensionTerrain {
             }
             super::Carver::Nether.carve(self.seed, cx, cz, &mut blocks, &[]);
         }
-        blocks
+        (blocks, r)
+    }
+    fn decoration(&self, x: i32, z: i32) -> std::sync::Arc<super::nether_population::Decoration> {
+        if let Some(existing) = self.decorations.lock().unwrap().get(&(x, z)).cloned() {
+            return existing;
+        }
+        let generated = std::sync::Arc::new(super::nether_population::populate(self, x, z));
+        let mut cache = self.decorations.lock().unwrap();
+        if cache.len() >= 64 {
+            cache.pop_first();
+        }
+        cache.insert((x, z), generated.clone());
+        generated
     }
     pub(crate) fn column(&self, cx: i32, cz: i32) -> crate::arena::Column {
         let mut blocks = self.provide(cx, cz);
+        let spawners = if self.kind == Dimension::Nether && self.populated {
+            super::fortress::paint_column(self.seed, cx, cz, &mut blocks)
+        } else {
+            Vec::new()
+        };
+        let mut chests = Vec::new();
+        let mut ticks = std::collections::BTreeMap::new();
         if self.kind == Dimension::Nether && self.populated {
-            super::fortress::paint_column(self.seed, cx, cz, &mut blocks);
+            use super::nether_population::{column, index};
+            for x in cx - 1..=cx {
+                for z in cz - 1..=cz {
+                    let decoration = self.decoration(x, z);
+                    for (&p, &state) in &decoration.blocks {
+                        if column(p) == (cx, cz) {
+                            blocks[index(p)] = state;
+                        }
+                    }
+                    chests.extend(
+                        decoration
+                            .chests
+                            .iter()
+                            .filter(|(p, _)| column(**p) == (cx, cz))
+                            .map(|(p, v)| (*p, v.clone())),
+                    );
+                    ticks.extend(
+                        decoration
+                            .ticks
+                            .iter()
+                            .filter(|(p, _)| column(**p) == (cx, cz))
+                            .map(|(p, t)| (*p, *t)),
+                    );
+                }
+            }
         }
         for spike in self.spikes() {
             spike.write_column(cx, cz, &mut blocks);
@@ -109,6 +162,13 @@ impl DimensionTerrain {
             }; 256],
         );
         col.skylight = false;
+        col.spawners = spawners
+            .into_iter()
+            .filter(|&(x, y, z)| {
+                blocks[usize::from(y) * 256 + ((z & 15) * 16 + (x & 15)) as usize] >> 4 == 52
+            })
+            .map(crate::anvil::Spawner::blaze)
+            .collect();
         // A ground-up 0x21 with mask zero means unload to a protocol 47 client.
         if col.sections.is_empty() {
             col.sections.insert(
@@ -120,12 +180,20 @@ impl DimensionTerrain {
                 },
             );
         }
+        let chests = chests
+            .into_iter()
+            .filter(|(p, _)| blocks[super::nether_population::index(*p)] >> 4 == 54)
+            .map(|(_, v)| v)
+            .collect();
+        ticks.retain(|p, _| blocks[super::nether_population::index(*p)] >> 4 == 10);
+        crate::anvil::store_nether_features((cx, cz), &mut col, chests, ticks);
         col
     }
     pub fn new(seed: i64, kind: Dimension) -> Self {
         let mut r = JavaRandom::new(seed);
         Self {
             populated: true,
+            decorations: Default::default(),
             spikes: Default::default(),
             seed,
             kind,

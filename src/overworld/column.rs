@@ -31,16 +31,30 @@ impl Overworld {
         unreachable!()
     }
     pub(crate) fn column(&self, cx: i32, cz: i32) -> Column {
-        let mut states = self.set_blocks_in_chunk(cx, cz);
+        let (states, biomes) = self.primer(cx, cz);
+        pack(&states, biomes)
+    }
+    pub(super) fn primer(&self, cx: i32, cz: i32) -> (Vec<u16>, [u8; 256]) {
         let ids = self.biomes.blocks(cx * 16, cz * 16, 16, 16);
-        self.replace_blocks_for_biome(cx, cz, &ids, &mut states);
+        let biomes = self.biomes.quarter(cx * 4 - 2, cz * 4 - 2, 10, 10);
+        self.primer_with_biomes(cx, cz, &ids, &biomes)
+    }
+    pub(super) fn primer_with_biomes(
+        &self,
+        cx: i32,
+        cz: i32,
+        ids: &[i32],
+        quarter: &[i32],
+    ) -> (Vec<u16>, [u8; 256]) {
+        let mut states = self.terrain_with_biomes(cx, cz, quarter);
+        self.replace_blocks_for_biome(cx, cz, ids, &mut states);
         for phase in [super::Carver::Caves, super::Carver::Ravine] {
-            phase.carve(self.seed, cx, cz, &mut states, &ids);
+            phase.carve(self.seed, cx, cz, &mut states, ids);
         }
         if self.structures {
             self.desert_temple(cx, cz, &mut states);
         }
-        pack(&states, std::array::from_fn(|i| ids[i] as u8))
+        (states, std::array::from_fn(|i| ids[i] as u8))
     }
 }
 pub(super) fn pack(states: &[u16], biomes: [u8; 256]) -> Column {
@@ -50,11 +64,36 @@ pub(super) fn pack(states: &[u16], biomes: [u8; 256]) -> Column {
         if blocks.iter().all(|v| *v == 0) {
             continue;
         }
-        let mut palette = blocks.to_vec();
+        let mut seen = [0u64; 1024];
+        let mut palette = Vec::new();
+        for &state in blocks {
+            let word = &mut seen[usize::from(state) >> 6];
+            let mask = 1u64 << (state & 63);
+            if *word & mask == 0 {
+                palette.push(state);
+                *word |= mask;
+            }
+        }
         palette.sort_unstable();
-        palette.dedup();
         let width = (usize::BITS - (palette.len() - 1).leading_zeros()) as usize;
-        let mut indices = vec![0u8; 512 * width];
+        let mut indices = Vec::with_capacity(512 * width);
+        if width != 0 {
+            let mut slots = vec![0u16; usize::from(*palette.last().unwrap()) + 1];
+            for (slot, &state) in palette.iter().enumerate() {
+                slots[usize::from(state)] = slot as u16;
+            }
+            let mut word = 0u32;
+            let mut bits = 0;
+            for &state in blocks {
+                word |= u32::from(slots[usize::from(state)]) << bits;
+                bits += width;
+                while bits >= 8 {
+                    indices.push(word as u8);
+                    word >>= 8;
+                    bits -= 8;
+                }
+            }
+        }
         let mut light = Box::new([[0u8; 2048]; 2]);
         for (i, &state) in blocks.iter().enumerate().rev() {
             let pos = i % 256;
@@ -66,13 +105,6 @@ pub(super) fn pack(states: &[u16], biomes: [u8; 256]) -> Column {
             };
             sky[pos] = sky[pos].saturating_sub(opacity);
             light[1][i / 2] |= sky[pos] << (4 * (i % 2));
-            if width != 0 {
-                let slot = palette.partition_point(|&v| v < state);
-                let bit = i * width;
-                for j in 0..width {
-                    indices[(bit + j) / 8] |= (((slot >> j) & 1) as u8) << ((bit + j) % 8);
-                }
-            }
         }
         sections.insert(
             sy as u8,

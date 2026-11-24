@@ -20,26 +20,26 @@ fn lattice(v: f64) -> (usize, f64, f64) {
 }
 
 fn grad(hash: u8, x: f64, y: f64, z: f64) -> f64 {
-    const G: [[i8; 3]; 16] = [
-        [1, 1, 0],
-        [-1, 1, 0],
-        [1, -1, 0],
-        [-1, -1, 0],
-        [1, 0, 1],
-        [-1, 0, 1],
-        [1, 0, -1],
-        [-1, 0, -1],
-        [0, 1, 1],
-        [0, -1, 1],
-        [0, 1, -1],
-        [0, -1, -1],
-        [1, 1, 0],
-        [0, -1, 1],
-        [-1, 1, 0],
-        [0, -1, -1],
+    const G: [[f64; 3]; 16] = [
+        [1., 1., 0.],
+        [-1., 1., 0.],
+        [1., -1., 0.],
+        [-1., -1., 0.],
+        [1., 0., 1.],
+        [-1., 0., 1.],
+        [1., 0., -1.],
+        [-1., 0., -1.],
+        [0., 1., 1.],
+        [0., -1., 1.],
+        [0., 1., -1.],
+        [0., -1., -1.],
+        [1., 1., 0.],
+        [0., -1., 1.],
+        [-1., 1., 0.],
+        [0., -1., -1.],
     ];
     let [a, b, c] = G[(hash & 15) as usize];
-    f64::from(a) * x + f64::from(b) * y + f64::from(c) * z
+    a * x + b * y + c * z
 }
 
 impl Improved {
@@ -62,6 +62,19 @@ impl Improved {
         weight: f64,
     ) {
         let p = |i: usize| self.perm[i & 255] as usize;
+        // Every horizontal sample of this octave uses the same Y lattice.
+        // DEFAULT terrain has 33 samples; keep this common case on the stack.
+        let sample_y = |iy: usize| {
+            if size[1] == 1 {
+                (0, 0., 0.)
+            } else {
+                lattice(origin[1] + iy as f64 * step[1] + self.offset[1])
+            }
+        };
+        let mut ys = [(0, 0., 0.); 33];
+        for (iy, slot) in ys.iter_mut().take(size[1]).enumerate() {
+            *slot = sample_y(iy);
+        }
         let mut index = 0;
         for ix in 0..size[0] {
             let (x, dx, fx) = lattice(origin[0] + ix as f64 * step[0] + self.offset[0]);
@@ -70,11 +83,7 @@ impl Improved {
                 let mut previous = None;
                 let mut edge = [[0.0; 2]; 2];
                 for iy in 0..size[1] {
-                    let (y, dy, fy) = if size[1] == 1 {
-                        (0, 0.0, 0.0)
-                    } else {
-                        lattice(origin[1] + iy as f64 * step[1] + self.offset[1])
-                    };
+                    let (y, dy, fy) = ys.get(iy).copied().unwrap_or_else(|| sample_y(iy));
                     // Vanilla retains its four X interpolants until the Y lattice changes.
                     if previous != Some(y) {
                         for (k, row) in edge.iter_mut().enumerate() {

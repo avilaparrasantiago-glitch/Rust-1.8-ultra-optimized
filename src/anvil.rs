@@ -534,6 +534,24 @@ fn encode_column(
     encode_level(pos, col, changes, generated_entities, root, level)
 }
 
+pub(crate) fn store_overworld_tiles(
+    pos: ColumnPos,
+    col: &mut Column,
+    tiles: Vec<Value>,
+    ticks: Vec<Value>,
+) -> io::Result<()> {
+    if tiles.is_empty() && ticks.is_empty() {
+        return Ok(());
+    }
+    let level = Compound::from([
+        ("TileEntities".into(), Value::List(tiles)),
+        ("TileTicks".into(), Value::List(ticks)),
+    ]);
+    col.spawners = spawners_in_level(pos, &level)?;
+    col.nbt = encode_level(pos, col, None, Vec::new(), Compound::new(), level)?;
+    Ok(())
+}
+
 pub(crate) fn store_nether_features(
     pos: ColumnPos,
     col: &mut Column,

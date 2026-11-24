@@ -17,12 +17,12 @@ pub struct Store {
     worker: Option<JoinHandle<io::Result<()>>>,
 }
 impl Store {
-    pub(crate) fn dimension_revision(dir: &Path) -> io::Result<u32> {
+    pub(crate) fn dimension_revision(dir: &Path, latest: u32) -> io::Result<u32> {
         match File::open(dir.join("generator.json")) {
             Ok(file) => {
                 let saved: GeneratorIdentity = serde_json::from_reader(file)?;
                 match saved.revision {
-                    r @ (1 | 2) => Ok(r),
+                    r if (1..=latest).contains(&r) => Ok(r),
                     _ => Err(crate::wire::invalid("unknown dimension generator revision")),
                 }
             }
@@ -37,7 +37,7 @@ impl Store {
                         }
                     }
                 }
-                Ok(2)
+                Ok(latest)
             }
             Err(error) => Err(error),
         }
@@ -48,6 +48,16 @@ impl Store {
         seed: Option<i64>,
         dimension: i32,
         revision: u32,
+    ) -> io::Result<Opened> {
+        Self::open_with_journal(dir, base, seed, dimension, revision, None)
+    }
+    pub(crate) fn open_with_journal(
+        dir: &Path,
+        base: Arc<Template>,
+        seed: Option<i64>,
+        dimension: i32,
+        revision: u32,
+        mut journal: Option<crate::overworld::populated::JournalWriter>,
     ) -> io::Result<Opened> {
         std::fs::create_dir_all(dir)?;
         let lease = std::fs::OpenOptions::new()
@@ -119,7 +129,10 @@ impl Store {
             .name("anvil-writer".into())
             .spawn(move || {
                 let _owner: File = lease;
-                let save = |s: &Edits| -> io::Result<()> {
+                let mut save = |s: &Edits| -> io::Result<()> {
+                    if let Some(j) = &mut journal {
+                        j.flush()?;
+                    }
                     anvil::export(&dir, &world, s)?;
                     if normal {
                         write_deltas(&dir, &deltas, &world, s)?;

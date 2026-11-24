@@ -25,7 +25,7 @@ struct Tunnel {
     stretch: f64,
 }
 
-fn trig(angle: f32, cosine: bool) -> f32 {
+pub(super) fn trig(angle: f32, cosine: bool) -> f32 {
     static TABLE: OnceLock<Vec<f32>> = OnceLock::new();
     let table = TABLE.get_or_init(|| {
         (0..65536)
@@ -35,7 +35,7 @@ fn trig(angle: f32, cosine: bool) -> f32 {
     table[((angle * 10430.378 + if cosine { 16384. } else { 0. }) as i32 & 65535) as usize]
 }
 impl JavaRandom {
-    fn float(&mut self) -> f32 {
+    pub(super) fn float(&mut self) -> f32 {
         self.bits(24) as f32 / 16777216.
     }
     fn wobble(&mut self) -> f32 {

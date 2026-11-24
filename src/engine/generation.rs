@@ -19,6 +19,7 @@ const CAPACITY: usize = 32;
 const IDLE_COLUMNS: usize = 32;
 
 pub(super) struct Generation {
+    thread: std::thread::JoinHandle<()>,
     jobs: Sender<(ColumnPos, Arc<AtomicBool>)>,
     ready: Receiver<(ColumnPos, Option<Column>)>,
     tokens: Vec<Arc<AtomicBool>>,
@@ -31,43 +32,89 @@ impl Generation {
         legacy: bool,
         revision: u32,
         dimension: Option<Arc<crate::overworld::DimensionTerrain>>,
+        mut population: Option<crate::overworld::populated::Population>,
         metrics: Arc<Metrics>,
     ) -> io::Result<Self> {
         let (jobs, rx) = bounded::<(ColumnPos, Arc<AtomicBool>)>(CAPACITY);
         let (tx, ready) = bounded(CAPACITY);
-        std::thread::Builder::new()
+        let thread = std::thread::Builder::new()
             .name("overworld-generator".into())
             .spawn(move || {
                 let generator = Generator(seed as u64);
-                let overworld = (!legacy && dimension.is_none()).then(|| {
-                    let mut provider = crate::overworld::Overworld::new(seed);
-                    provider.structures = revision >= 2;
-                    provider
-                });
-                for (pos, wanted) in rx {
-                    let col = wanted.load(Ordering::Acquire).then(|| {
+                let overworld =
+                    (!legacy && dimension.is_none() && population.is_none()).then(|| {
+                        let mut provider = crate::overworld::Overworld::new(seed);
+                        provider.structures = revision >= 2;
+                        provider
+                    });
+                let mut batch = Vec::with_capacity(CAPACITY);
+                let mut positions = Vec::with_capacity(CAPACITY);
+                let mut prepared = HashMap::with_capacity(CAPACITY);
+                while let Ok(first) = rx.recv() {
+                    batch.push(first);
+                    batch.extend(rx.try_iter().take(CAPACITY - 1));
+                    if batch.len() > 1
+                        && let Some(generator) = &mut population
+                    {
+                        positions.extend(
+                            batch
+                                .iter()
+                                .filter(|(_, wanted)| wanted.load(Ordering::Acquire))
+                                .map(|(pos, _)| *pos),
+                        );
                         let start = Instant::now();
-                        let col = if let Some(d) = &dimension {
-                            d.column(pos.0, pos.1)
-                        } else {
-                            match &overworld {
-                                Some(provider) => provider.column(pos.0, pos.1),
-                                None => generator.column(pos.0, pos.1),
-                            }
-                        };
-                        col.packet(pos);
+                        match generator.columns(&positions) {
+                            Ok(cols) => prepared.extend(positions.iter().copied().zip(cols)),
+                            Err(e) => eprintln!("Overworld population batch failed: {e}"),
+                        }
                         metrics
                             .generation_ns
                             .fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                        metrics.generated_columns.fetch_add(1, Ordering::Relaxed);
-                        col
-                    });
-                    if tx.send((pos, col)).is_err() {
-                        break;
+                        positions.clear();
                     }
+                    for (pos, wanted) in batch.drain(..) {
+                        let col = wanted
+                            .load(Ordering::Acquire)
+                            .then(|| {
+                                let start = Instant::now();
+                                let col = if let Some(col) = prepared.remove(&pos) {
+                                    col
+                                } else if let Some(d) = &dimension {
+                                    d.column(pos.0, pos.1)
+                                } else if let Some(population) = &mut population {
+                                    match population.column(pos) {
+                                        Ok(c) => c,
+                                        Err(e) => {
+                                            eprintln!(
+                                                "Overworld population failed at {pos:?}: {e}"
+                                            );
+                                            return None;
+                                        }
+                                    }
+                                } else {
+                                    match &overworld {
+                                        Some(provider) => provider.column(pos.0, pos.1),
+                                        None => generator.column(pos.0, pos.1),
+                                    }
+                                };
+                                col.packet(pos);
+                                metrics.generation_ns.fetch_add(
+                                    start.elapsed().as_nanos() as u64,
+                                    Ordering::Relaxed,
+                                );
+                                metrics.generated_columns.fetch_add(1, Ordering::Relaxed);
+                                Some(col)
+                            })
+                            .flatten();
+                        if tx.send((pos, col)).is_err() {
+                            return;
+                        }
+                    }
+                    prepared.clear();
                 }
             })?;
         Ok(Self {
+            thread,
             jobs,
             ready,
             pending: HashMap::with_capacity(CAPACITY),
@@ -75,6 +122,17 @@ impl Generation {
                 .map(|_| Arc::new(AtomicBool::new(false)))
                 .collect(),
         })
+    }
+
+    pub(super) fn finish(self) {
+        for token in self.pending.values() {
+            token.store(false, Ordering::Release);
+        }
+        drop(self.jobs);
+        drop(self.ready);
+        if self.thread.join().is_err() {
+            eprintln!("Generation worker panicked on shutdown");
+        }
     }
 
     pub(super) fn request(&mut self, pos: ColumnPos) {
@@ -140,6 +198,7 @@ mod tests {
                 12345,
                 Dimension::Nether,
             ))),
+            None,
             Arc::default(),
         )
         .unwrap();
@@ -151,6 +210,7 @@ mod tests {
                 12345,
                 Dimension::End,
             ))),
+            None,
             Arc::default(),
         )
         .unwrap();
@@ -196,7 +256,7 @@ mod tests {
 
     #[test]
     fn abandoned_work_is_bounded_discarded_and_retryable() {
-        let mut queue = Generation::new(9581, false, 2, None, Arc::default()).unwrap();
+        let mut queue = Generation::new(9581, false, 2, None, None, Arc::default()).unwrap();
         let mut cache = Template::flat(3);
         for x in 0..64 {
             queue.request((x, 9));

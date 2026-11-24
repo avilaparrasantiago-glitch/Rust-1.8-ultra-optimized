@@ -2,6 +2,10 @@
 
 mod biomes;
 mod carvers;
+pub mod decoration;
+pub mod dungeons;
+pub mod lakes;
+pub mod ores;
 mod column;
 mod mesa;
 pub use carvers::Carver;
@@ -14,6 +18,7 @@ pub use spikes::{EndSpike, SpikeGenerator};
 mod noise;
 pub use dimensions::{Dimension, DimensionTerrain};
 mod provider;
+pub(crate) mod populated;
 mod simplex;
 pub use biomes::Biomes;
 pub use noise::Octaves;
@@ -90,10 +95,10 @@ impl LandLayers {
     }
 }
 
-struct JavaRandom(u64);
+pub struct JavaRandom(u64);
 
 impl JavaRandom {
-    fn new(seed: i64) -> Self {
+    pub fn new(seed: i64) -> Self {
         Self((seed as u64 ^ 0x5deece66d) & ((1 << 48) - 1))
     }
 

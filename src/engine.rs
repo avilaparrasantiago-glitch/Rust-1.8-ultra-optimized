@@ -306,9 +306,10 @@ impl Manager {
         };
         let persistent = self.cfg.persistent_worlds.iter().any(|s| s == name);
         let dir = self.cfg.data_dir.join(name).join("region");
+        let latest = if dimension == 0 { 3 } else { 2 };
         let revision = match (normal || dimension != 0, persistent) {
-            (true, true) => crate::persistence::Store::dimension_revision(&dir)?,
-            (true, false) => 2,
+            (true, true) => crate::persistence::Store::dimension_revision(&dir, latest)?,
+            (true, false) => latest,
             _ => 1,
         };
         let provider = dim.map(|kind| {
@@ -318,6 +319,16 @@ impl Manager {
             }
             Arc::new(terrain)
         });
+        let mut population = if revision == 3 && dimension == 0 {
+            Some(crate::overworld::populated::Population::open(
+                self.seed,
+                persistent
+                    .then_some(dir.with_file_name("population"))
+                    .as_deref(),
+            )?)
+        } else {
+            None
+        };
         let template = match provider.as_deref().zip(dim) {
             Some((provider, d)) => {
                 let mut t = Template::dimension(provider, i32::from(self.cfg.view_distance) + 1, d);
@@ -331,15 +342,37 @@ impl Manager {
                 i32::from(self.cfg.view_distance) + 1,
                 1,
             )),
+            None if population.is_some() => {
+                let mut template = Template {
+                    spawn_hint: self.template.spawn_hint,
+                    columns: BTreeMap::new(),
+                };
+                if let Some(generator) = &mut population {
+                    let positions: Vec<_> = self.template.columns.keys().copied().collect();
+                    let columns = generator.columns(&positions)?;
+                    template.columns.extend(positions.into_iter().zip(columns));
+                }
+                if let Some([x, mut y, z]) = template.spawn_hint {
+                    while y < 254
+                        && (template.block((x, y as u8, z)) != 0
+                            || template.block((x, (y + 1) as u8, z)) != 0)
+                    {
+                        y += 1;
+                    }
+                    template.spawn_hint = Some([x, y, z]);
+                }
+                Arc::new(template)
+            }
             None => self.template.clone(),
         };
         let (store, template, edits, legacy) = if persistent {
-            let (s, t, edits) = crate::persistence::Store::open(
+            let (s, t, edits) = crate::persistence::Store::open_with_journal(
                 &dir,
                 template,
                 normal.then_some(self.seed),
                 dimension,
                 revision,
+                population.as_mut().and_then(|p| p.journal.take()),
             )?;
             let legacy = s.legacy;
             (Some(s), t, edits, legacy)
@@ -357,6 +390,7 @@ impl Manager {
                     legacy,
                     revision,
                     provider,
+                    population,
                     self.metrics.clone(),
                 )
             })
@@ -595,6 +629,9 @@ impl Room {
             } else {
                 std::thread::sleep(deadline - now);
             }
+        }
+        if let Some(worker) = self.generation.take() {
+            worker.finish();
         }
         if let Some(store) = &mut self.store
             && let Err(e) = store.close(self.world.edits.clone())

@@ -103,8 +103,11 @@ impl Overworld {
         }
     }
     fn density(&self, cx: i32, cz: i32) -> [f64; 825] {
+        let biomes = self.biomes.quarter(cx * 4 - 2, cz * 4 - 2, 10, 10);
+        self.density_with_biomes(cx, cz, &biomes)
+    }
+    fn density_with_biomes(&self, cx: i32, cz: i32, biomes: &[i32]) -> [f64; 825] {
         let origin = [cx * 4, 0, cz * 4];
-        let biomes = self.biomes.quarter(origin[0] - 2, origin[2] - 2, 10, 10);
         let mut depth = [0.; 25];
         self.depth
             .fill(&mut depth, origin, [5, 1, 5], [200., 1., 200.]);
@@ -179,7 +182,12 @@ impl Overworld {
         low
     }
     pub fn set_blocks_in_chunk(&self, cx: i32, cz: i32) -> Vec<u16> {
-        let field = self.density(cx, cz);
+        Self::interpolate_density(self.density(cx, cz))
+    }
+    pub(super) fn terrain_with_biomes(&self, cx: i32, cz: i32, biomes: &[i32]) -> Vec<u16> {
+        Self::interpolate_density(self.density_with_biomes(cx, cz, biomes))
+    }
+    fn interpolate_density(field: [f64; 825]) -> Vec<u16> {
         let mut states = vec![0; 65536];
         for gx in 0..4 {
             for gz in 0..4 {

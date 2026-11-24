@@ -379,6 +379,16 @@ impl Manager {
         } else {
             (None, template, Default::default(), false)
         };
+        // Prepare immutable spawn packets before admitting players. Later
+        // exploration packets are prepared on the generation worker.
+        let center = column(template.spawn()?);
+        let radius = u32::from(self.cfg.view_distance);
+        use rayon::prelude::*;
+        template.columns.par_iter().for_each(|(&pos, col)| {
+            if pos.0.abs_diff(center.0) <= radius && pos.1.abs_diff(center.1) <= radius {
+                col.packet(pos);
+            }
+        });
         let mut entities = EntityArena::with_capacity(ENTITIES_PER_ROOM);
         if dimension == 1 && revision == 2 {
             crate::anvil::load_end_crystals(&template, &mut entities)?;
@@ -887,87 +897,106 @@ impl Room {
                 -((dx * dx + dz * dz - (dx * dir[0] + dz * dir[1]).clamp(-0.9, 0.9)) * 100.) as i32
             });
         }
-        let mut cols = [None; 2];
-        // Keep missing entries in the priority list until the worker delivers them.
-        // Moving to another chunk rebuilds that list before anything is sent.
-        for &pos in player.pending_cols.iter().rev().take(2) {
-            if !self.world.contains(pos)
-                && let Some(generation) = &mut self.generation
+        // Feed the worker ahead of delivery so adjacent missing primers can
+        // share a Rayon batch. Pending entries stay in player priority order.
+        if let Some(generation) = &mut self.generation {
+            for &pos in player
+                .pending_cols
+                .iter()
+                .rev()
+                .filter(|&&pos| !self.world.contains(pos))
+                .take(16)
             {
                 generation.request(pos);
             }
         }
-        for slot in &mut cols {
-            if let Some(&pos) = player.pending_cols.last()
-                && self.world.contains(pos)
+        let start = Instant::now();
+        for pair in 0..16 {
+            // Keep room for ordinary play packets on a slow connection.
+            if player.output.capacity() < 16
+                || (pair > 0 && start.elapsed() >= Duration::from_millis(2))
             {
-                *slot = player.pending_cols.pop();
+                break;
             }
-        }
-        for col in cols.into_iter().flatten() {
-            self.mgr.metrics.chunk_lookups.fetch_add(1, Relaxed);
-            if self.world.template.cached(col) || self.world.generated.cached(col) {
-                self.mgr.metrics.chunk_hits.fetch_add(1, Relaxed);
-            }
-        }
-        let mut grouped = false;
-        if let [Some(a), Some(b)] = cols
-            && a.0.abs_diff(b.0) + a.1.abs_diff(b.1) == 1
-        {
-            let positions = [a, b];
-            if self
-                .last_bulk
-                .as_ref()
-                .is_none_or(|(key, _)| *key != positions)
-            {
-                self.last_bulk = self
-                    .world
-                    .template
-                    .bulk_packet(positions)
-                    .map(|p| (positions, p));
-            }
-            if let Some((_, packet)) = &self.last_bulk {
-                player.send(packet.clone());
-                grouped = true;
-            }
-        }
-        for col in cols.into_iter().flatten() {
-            if !grouped {
-                let Some(packet) = self
-                    .world
-                    .template
-                    .packet(col)
-                    .or_else(|| self.world.generated.packet(col))
+            let mut cols = [None; 2];
+            for slot in &mut cols {
+                let Some(index) = player
+                    .pending_cols
+                    .iter()
+                    .rposition(|&pos| self.world.contains(pos))
                 else {
-                    continue;
+                    break;
                 };
-                player.send(packet);
+                *slot = Some(player.pending_cols.remove(index));
             }
-            player.loaded.insert(col);
-            if let Some(column) = self
-                .world
-                .template
-                .columns
-                .get(&col)
-                .or_else(|| self.world.generated.columns.get(&col))
-            {
-                for spawner in &column.spawners {
-                    if self.world.block(spawner.pos) >> 4 == 52
-                        && !self
-                            .world
-                            .edits
-                            .get(&col)
-                            .is_some_and(|changes| changes.contains_key(&spawner.pos))
-                    {
-                        player.send(spawner.update.clone());
-                    }
+            if cols[0].is_none() {
+                break;
+            }
+            for col in cols.into_iter().flatten() {
+                self.mgr.metrics.chunk_lookups.fetch_add(1, Relaxed);
+                if self.world.template.cached(col) || self.world.generated.cached(col) {
+                    self.mgr.metrics.chunk_hits.fetch_add(1, Relaxed);
                 }
             }
-            if let Some(edits) = self.world.edits.get(&col) {
-                for (&pos, &state) in edits {
-                    player.send(p::block(pos, state));
-                    if let Some(lines) = self.signs.get(&pos) {
-                        player.send(p::sign(pos, lines));
+            let mut grouped = false;
+            if let [Some(a), Some(b)] = cols
+                && a.0.abs_diff(b.0) + a.1.abs_diff(b.1) == 1
+            {
+                let positions = [a, b];
+                if self
+                    .last_bulk
+                    .as_ref()
+                    .is_none_or(|(key, _)| *key != positions)
+                {
+                    self.last_bulk = self
+                        .world
+                        .template
+                        .bulk_packet(positions)
+                        .map(|p| (positions, p));
+                }
+                if let Some((_, packet)) = &self.last_bulk {
+                    player.send(packet.clone());
+                    grouped = true;
+                }
+            }
+            for col in cols.into_iter().flatten() {
+                if !grouped {
+                    let Some(packet) = self
+                        .world
+                        .template
+                        .packet(col)
+                        .or_else(|| self.world.generated.packet(col))
+                    else {
+                        continue;
+                    };
+                    player.send(packet);
+                }
+                player.loaded.insert(col);
+                if let Some(column) = self
+                    .world
+                    .template
+                    .columns
+                    .get(&col)
+                    .or_else(|| self.world.generated.columns.get(&col))
+                {
+                    for spawner in &column.spawners {
+                        if self.world.block(spawner.pos) >> 4 == 52
+                            && !self
+                                .world
+                                .edits
+                                .get(&col)
+                                .is_some_and(|changes| changes.contains_key(&spawner.pos))
+                        {
+                            player.send(spawner.update.clone());
+                        }
+                    }
+                }
+                if let Some(edits) = self.world.edits.get(&col) {
+                    for (&pos, &state) in edits {
+                        player.send(p::block(pos, state));
+                        if let Some(lines) = self.signs.get(&pos) {
+                            player.send(p::sign(pos, lines));
+                        }
                     }
                 }
             }

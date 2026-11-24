@@ -57,6 +57,34 @@ impl Overworld {
         (states, std::array::from_fn(|i| ids[i] as u8))
     }
 }
+fn attenuate(level: u8, state: u16) -> u8 {
+    match state >> 4 {
+        0 | 111 => level,
+        8 | 9 | 79 => level.saturating_sub(3),
+        18 => level.saturating_sub(1),
+        _ => 0,
+    }
+}
+
+fn write_sky(blocks: &[u16], sky: &mut [u8; 256], plane: &mut [u8; 2048]) {
+    for (layer, row) in blocks.rchunks_exact(256).zip(plane.rchunks_exact_mut(128)) {
+        if sky.iter().all(|&level| level == 0) {
+            break;
+        }
+        for ((pair, levels), byte) in layer
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .zip(sky.as_chunks_mut::<2>().0)
+            .zip(row)
+        {
+            levels[0] = attenuate(levels[0], pair[0]);
+            levels[1] = attenuate(levels[1], pair[1]);
+            *byte = levels[0] | (levels[1] << 4);
+        }
+    }
+}
+
 pub(super) fn pack(states: &[u16], biomes: [u8; 256]) -> Column {
     let mut sections = BTreeMap::new();
     let mut sky = [15u8; 256];
@@ -95,17 +123,7 @@ pub(super) fn pack(states: &[u16], biomes: [u8; 256]) -> Column {
             }
         }
         let mut light = Box::new([[0u8; 2048]; 2]);
-        for (i, &state) in blocks.iter().enumerate().rev() {
-            let pos = i % 256;
-            let opacity = match state >> 4 {
-                0 | 111 => 0,
-                8 | 9 | 79 => 3,
-                18 => 1,
-                _ => 15,
-            };
-            sky[pos] = sky[pos].saturating_sub(opacity);
-            light[1][i / 2] |= sky[pos] << (4 * (i % 2));
-        }
+        write_sky(blocks, &mut sky, &mut light[1]);
         sections.insert(
             sy as u8,
             Section {
@@ -122,5 +140,33 @@ pub(super) fn pack(states: &[u16], biomes: [u8; 256]) -> Column {
         biomes,
         packet: OnceLock::new(),
         nbt: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "release performance measurement"]
+    fn lit_packet_timing() {
+        let terrain = Overworld::new(4862413858852300341);
+        let mut samples = Vec::new();
+        for x in -6..6 {
+            for z in -6..6 {
+                let (states, biomes) = terrain.primer(x, z);
+                let start = std::time::Instant::now();
+                let column = pack(&states, biomes);
+                std::hint::black_box(column.packet((x, z)));
+                samples.push(start.elapsed());
+            }
+        }
+        samples.sort_unstable();
+        println!(
+            "144 newly packed lit packets (ms), p50 {:.3}, p95 {:.3}, max {:.3}",
+            samples[71].as_secs_f64() * 1000.,
+            samples[136].as_secs_f64() * 1000.,
+            samples[143].as_secs_f64() * 1000.
+        );
     }
 }

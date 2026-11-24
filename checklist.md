@@ -2,7 +2,7 @@
 
 ## Fase 0 · Repositorio y arranque
 
-- [x] T0.1 · Versionar el proyecto y excluir artefactos locales y `FONTS EXTRAS/`.
+- [x] T0.1 · Versionar el proyecto y versionar las referencias de `FONTS EXTRAS/` y excluir los artefactos locales.
 - [x] T0.2 · Arrancar con una base SQLite local, incluso en rutas con espacios y caracteres especiales.
 
 ## Fase 1 · Entidades

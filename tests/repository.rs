@@ -22,6 +22,11 @@ fn git_keeps_project_files_and_ignores_local_artifacts() -> Result<(), Box<dyn E
         "src/main.rs",
         "tests/protocol47.py",
         "FONTS EXTRAS/notes.md",
+        "FONTS EXTRAS/tools/Reference.java",
+        "FONTS EXTRAS/target/Reference.class",
+        "FONTS EXTRAS/target/server.jar",
+        "FONTS EXTRAS/target/latest.log",
+        "FONTS EXTRAS/tools/__pycache__/helper.pyc",
         "tools/Reference.java",
         "tools/Reference.class",
         "server.jar",
@@ -50,7 +55,16 @@ fn git_keeps_project_files_and_ignores_local_artifacts() -> Result<(), Box<dyn E
     );
     assert_eq!(
         String::from_utf8(files.stdout)?.lines().collect::<Vec<_>>(),
-        [".gitignore", "Cargo.lock", "linux/coral_xdp.c", "src/main.rs"]
+        [
+            ".gitignore",
+            "Cargo.lock",
+            "FONTS EXTRAS/notes.md",
+            "FONTS EXTRAS/target/Reference.class",
+            "FONTS EXTRAS/target/server.jar",
+            "FONTS EXTRAS/tools/Reference.java",
+            "linux/coral_xdp.c",
+            "src/main.rs",
+        ]
     );
     Ok(())
 }

@@ -4,7 +4,7 @@ SyRust is an independent Rust project. Use only the Minecraft references supplie
 
 ### Local references and the published repository
 
-Keep Java sources, compiled classes, JARs and other JVM reference artifacts in the Git-ignored directory `FONTS EXTRAS/`. Keep comparison tools written in languages outside the project stack there as well. Before publishing, check the Git index for these files, including any previously tracked copies. The published tree contains the Rust implementation, the native integrations and scripting technologies specified here, and the data the engine needs to build and run.
+Keep Java sources, compiled classes, JARs and other JVM reference artifacts under the versioned directory `FONTS EXTRAS/`. Store comparison tools written in languages outside the project stack there as well. Keep engine inputs in their normal project paths. Before publishing, verify that JVM reference files in the Git index are confined to `FONTS EXTRAS/`.
 
 Track [checklist.md](checklist.md) in Git. When a roadmap task or its status changes, update the checklist in the same commit as [ROADMAP.md](ROADMAP.md) so GitHub shows the same status in both documents.
 

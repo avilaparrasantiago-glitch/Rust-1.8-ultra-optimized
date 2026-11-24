@@ -357,6 +357,6 @@ Se conservan íntegros como material de estudio. La regla de paridad anterior de
 
 ## Referencias locales
 
-Las fuentes y clases Java, los clientes de comparación y las herramientas auxiliares de Python y Bash se conservan en la carpeta local `FONTS EXTRAS`. Las rutas históricas de esas herramientas se interpretan desde esa carpeta. Las dos tablas de geometría en src/overworld forman parte de los datos del motor Rust.
+Las fuentes y clases Java, los clientes de comparación y las herramientas auxiliares de Python y Bash se conservan en la carpeta versionada `FONTS EXTRAS`. Las rutas históricas de esas herramientas se interpretan desde esa carpeta. Las dos tablas de geometría en src/overworld forman parte de los datos del motor Rust.
 
 Guarda también en esa carpeta los JAR, los demás derivados de la JVM y cualquier herramienta de comparación que use tecnologías ajenas a [ARCHITECTURE.md](ARCHITECTURE.md#local-references-and-the-published-repository). Antes de publicar, revisa el índice de Git para comprobar que excluye ese material, incluso si alguna copia ya estaba versionada, y que incluye `checklist.md`.

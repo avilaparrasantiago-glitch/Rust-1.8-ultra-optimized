@@ -132,6 +132,184 @@ public final class TerrainReference {
         long seed = Long.parseLong(args[0]);
         int x = Integer.parseInt(args[1]), z = Integer.parseInt(args[2]);
         World world = new World(seed);
+        if (args[3].equals("mine-corridor")) {
+            try (DataOutputStream out = new DataOutputStream(new java.util.zip.GZIPOutputStream(new FileOutputStream(args[4])))) {
+                for (int facing=0;facing<4;facing++) for(int variant=0;variant<3;variant++) {
+                    int width=facing%2==0?3:20, length=facing%2==0?20:3;
+                    aqe box=new aqe(-9,32,503,-10+width,34,502+length);
+                    dn tag=new dn();
+                    tag.a("id","MSCorridor");tag.a("BB",new int[]{box.a,box.b,box.c,box.d,box.e,box.f});
+                    tag.a("GD",1);tag.a("O",facing);tag.a("Num",4);tag.a("hr",variant==1);tag.a("sc",variant==2);
+                    aqt corridor=aqr.b(tag,world);
+                    java.util.Map<cj,alz> changes=new java.util.HashMap<>();
+                    du carts=new du();
+                    World stone=new World(seed){
+                        public alz p(cj pos){return changes.getOrDefault(pos,afi.b.Q());}
+                        public boolean a(cj pos,alz state,int flags){changes.put(pos,state);return true;}
+                        public akw s(cj pos){return null;}
+                        public boolean d(pk entity){
+                            vb cart=(vb)entity;
+                            dn entry=new dn(); entry.a("Pos",new int[]{(int)Math.floor(cart.s),(int)Math.floor(cart.t),(int)Math.floor(cart.u)});
+                            du items=new du();
+                            for(int slot=0;slot<cart.o_();slot++){zx stack=cart.a(slot);if(stack!=null){dn item=new dn();item.a("Slot",(byte)slot);items.a(stack.b(item));}}
+                            entry.a("Items",items);carts.a(entry);return true;
+                        }
+                    };
+                    for(int cx=(box.a-8)>>4;cx<=((box.d-8)>>4);cx++) for(int cz=(box.c-8)>>4;cz<=((box.f-8)>>4);cz++) {
+                        Random rng=new Random(seed+31*cx+cz);
+                        corridor.a(stone,rng,new aqe(cx*16+8,0,cz*16+8,cx*16+23,255,cz*16+23));
+                        out.writeInt(rng.nextInt());
+                    }
+                    for(int y=31;y<=34;y++)for(int zp=box.c;zp<=box.f;zp++)for(int xp=box.a;xp<=box.d;xp++){
+                        alz state=stone.p(new cj(xp,y,zp));out.writeShort(afh.a(state.c())*16+state.c().c(state));
+                    }
+                    dn entities=new dn();entities.a("Carts",carts);
+                    if (carts.c()>0) System.out.printf("seed %d facing %d variant %d carts %d%n",seed,facing,variant,carts.c());
+                    ByteArrayOutputStream raw=new ByteArrayOutputStream();
+                    dx.a(entities,(DataOutput)new DataOutputStream(raw));
+                    out.writeInt(raw.size());raw.writeTo(out);
+                }
+            }
+            return;
+        }
+        if (args[3].equals("portal-room")) {
+            try (DataOutputStream out = new DataOutputStream(new java.util.zip.GZIPOutputStream(new FileOutputStream(args[4])))) {
+                for (int dir=0;dir<4;dir++) {
+                    aqe box = new aqe(-4,32,505,-4+(dir%2==0?10:15),39,505+(dir%2==0?15:10));
+                    aqp.g portal = new aqp.g(7,new Random(0),box,cq.b(dir));
+                    java.util.Map<cj, alz> changes = new java.util.HashMap<>();
+                    World stone = new World(seed) {
+                        public alz p(cj pos) { return changes.getOrDefault(pos, afi.b.Q()); }
+                        public akw s(cj pos) { return null; }
+                        public boolean a(cj pos, alz state, int flags) { changes.put(pos,state);return true; }
+                    };
+                    for(int cx=(box.a-8)>>4;cx<=((box.d-8)>>4);cx++) for(int cz=(box.c-8)>>4;cz<=((box.f-8)>>4);cz++){
+                        Random rng = new Random(seed+cx*31+cz);
+                        portal.a(stone,rng,new aqe(cx*16+8,0,cz*16+8,cx*16+23,255,cz*16+23));
+                        out.writeInt(rng.nextInt());
+                    }
+                    for(int y=32;y<=39;y++) for(int zp=box.c;zp<=box.f;zp++) for(int xp=box.a;xp<=box.d;xp++){
+                        alz state=stone.p(new cj(xp,y,zp));
+                        out.writeShort(afh.a(state.c())*16+state.c().c(state));
+                    }
+                }
+            }
+            return;
+        }
+        if (args[3].equals("structure-loot")) {
+            Field library = aqp.e.class.getDeclaredField("a");
+            library.setAccessible(true);
+            java.lang.reflect.Method minePool = aqg.class.getDeclaredMethod("b");
+            minePool.setAccessible(true);
+            dn root = new dn();
+            for (boolean mine : new boolean[]{false, true}) {
+                du cases = new du();
+                for (int sample = 0; sample < x; sample++) {
+                    Random rng = new Random(seed + sample);
+                    @SuppressWarnings("unchecked")
+                    java.util.List<ob> pool = (java.util.List<ob>)(mine ? minePool.invoke(null) : library.get(null));
+                    ob book = mine ? zy.cd.b(rng) : zy.cd.a(rng, 1, 5, 2);
+                    int rolls = (mine ? 3 : 1) + rng.nextInt(4);
+                    if (mine) rng.nextBoolean();
+                    og inventory = mine ? new vb(world, 0.5, 20.5, 0.5) : new aky();
+                    ob.a(rng, ob.a(pool, book), inventory, rolls);
+                    du items = new du();
+                    for (int slot = 0; slot < inventory.o_(); slot++) {
+                        zx stack = inventory.a(slot);
+                        if (stack == null) continue;
+                        dn item = new dn();
+                        item.a("Slot", (byte)slot);
+                        items.a(stack.b(item));
+                    }
+                    dn result = new dn();
+                    result.a("Items", items);
+                    result.a("Next", rng.nextInt());
+                    cases.a(result);
+                }
+                root.a(mine ? "Mine" : "Library", cases);
+            }
+            try (FileOutputStream out = new FileOutputStream(args[4])) { dx.a(root, out); }
+            return;
+        }
+        if (args[3].equals("stronghold-layout") || args[3].equals("mineshaft-layout")) {
+            aqq generator = args[3].equals("stronghold-layout") ? new aqo() : new aqf();
+            generator.c = world;
+            Random random = new Random(seed);
+            generator.b.setSeed(seed ^ x * random.nextLong() ^ z * random.nextLong());
+            generator.b.nextInt();
+            if (!generator.a(x, z)) throw new IllegalArgumentException("not a start");
+            aqu start = generator.b(x, z);
+            if (args[3].equals("stronghold-layout")) {
+                aqu reopened = aqr.a(start.a(x, z), world);
+                for (aqu version : new aqu[]{start, reopened}) {
+                    cj target = version.b().getFirst().a();
+                    System.out.printf("eye %d %d %d%n",target.n(),target.o(),target.p());
+                }
+            }
+            try (FileOutputStream out = new FileOutputStream(args[4])) {
+                dx.a(start.a(x, z), out);
+            }
+            if (args.length > 5) {
+                if (args.length>6 && (args[6].equals("whole") || args[6].equals("terrain"))) {
+                    DesertWorld terrain=args[6].equals("terrain")?new DesertWorld(seed):null;
+                    java.util.Map<cj,alz> changes=new java.util.HashMap<>();
+                    java.util.Map<cj,akw> tiles=new java.util.HashMap<>();
+                    World stone=new World(seed) {
+                        public alz p(cj pos){alz state=changes.get(pos);return state!=null?state:(terrain==null?afi.b.Q():terrain.p(pos));}
+                        public boolean a(cj pos,alz state,int flags){
+                            if(state.c()!=p(pos).c()){
+                                tiles.remove(pos);
+                                akw tile=state.c()==afi.ae?new aky():state.c()==afi.ac?new all():null;
+                                if(tile!=null){tile.a(pos);tiles.put(pos,tile);}
+                            }
+                            changes.put(pos,state);return true;
+                        }
+                        public akw s(cj pos){return tiles.get(pos);}
+                        public void b(cj pos,akw tile){}
+                        public boolean d(pk entity){return true;}
+                    };
+                    aqe bb=start.a();
+                    try(DataOutputStream out=new DataOutputStream(new java.util.zip.GZIPOutputStream(new FileOutputStream(args[5])))){
+                        for(int cx=(bb.a-8)>>4;cx<=((bb.d-8)>>4);cx++)for(int cz=(bb.c-8)>>4;cz<=((bb.f-8)>>4);cz++){
+                            Random rng=new Random(seed);
+                            if(terrain!=null){long mx=rng.nextLong()/2*2+1,mz=rng.nextLong()/2*2+1;rng.setSeed((cx*mx+cz*mz)^seed);}
+                            else rng.setSeed(seed+cx*31+cz);
+                            start.a(stone,rng,new aqe(cx*16+8,0,cz*16+8,cx*16+23,255,cz*16+23));
+                            out.writeInt(rng.nextInt());
+                        }
+                        for(int y=bb.b-1;y<=bb.e;y++)for(int zp=bb.c;zp<=bb.f;zp++)for(int xp=bb.a;xp<=bb.d;xp++) {
+                            alz state=stone.p(new cj(xp,y,zp));out.writeShort(afh.a(state.c())*16+state.c().c(state));
+                        }
+                        if(args[3].equals("stronghold-layout")){
+                            dn root=new dn();for(akw tile:tiles.values()){dn tag=new dn();tile.b(tag);cj pos=tile.v();root.a(pos.n()+","+pos.o()+","+pos.p(),tag);}
+                            dx.a(root,(DataOutput)out);
+                        }
+                    }
+                    return;
+                }
+                aqt room = start.b().getFirst();
+                aqe bb = room.c();
+                java.util.Map<cj, alz> changes = new java.util.HashMap<>();
+                World stone = new World(seed) {
+                    public alz p(cj pos) { return changes.getOrDefault(pos, afi.b.Q()); }
+                    public boolean a(cj pos, alz state, int flags) {
+                        changes.put(new cj(pos.n(),pos.o(),pos.p()), state);
+                        return true;
+                    }
+                };
+                int cx = (bb.a-8)>>4, cz = (bb.c-8)>>4;
+                for (int i=cx;i<=((bb.d-8)>>4);i++) for(int k=cz;k<=((bb.f-8)>>4);k++) {
+                    room.a(stone,new Random(0),new aqe(i*16+8,0,k*16+8,i*16+23,255,k*16+23));
+                }
+                try(DataOutputStream out = new DataOutputStream(new java.util.zip.GZIPOutputStream(new FileOutputStream(args[5])))) {
+                    for(int y=bb.b-1;y<=bb.e+1;y++) for(int zpos=bb.c-1;zpos<=bb.f+1;zpos++) for(int xpos=bb.a-1;xpos<=bb.d+1;xpos++) {
+                        alz state=stone.p(new cj(xpos,y,zpos));
+                        out.writeShort(afh.a(state.c())*16+state.c().c(state));
+                    }
+                }
+            }
+            return;
+        }
         if(args[3].equals("desert-blocks")){
             DesertWorld desert=new DesertWorld(seed);
             aqm generator=new aqm();generator.c=desert;

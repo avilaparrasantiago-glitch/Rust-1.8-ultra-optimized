@@ -9,10 +9,13 @@ use super::{
     dungeons::DungeonWorld,
     lakes::LakeWorld,
 };
+use crate::anvil::structures::{Family, StructureFile};
 use crate::arena::{Column, ColumnPos};
+mod mines;
 use crossbeam_channel::{Receiver, Sender};
 use fastnbt::Value;
 use flate2::read::GzDecoder;
+use mines::MineDelta;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::io::{BufReader, BufWriter, Write};
@@ -27,6 +30,49 @@ use std::{
 
 type Pos = [i32; 3];
 const RAW_CACHE_CAPACITY: usize = 2048;
+fn place_holds(
+    provider: &Overworld,
+    index: &StructureFile,
+    ring: [ColumnPos; 3],
+    (cx, cz): ColumnPos,
+    world: &mut impl DungeonWorld,
+    rng: &mut JavaRandom,
+) -> io::Result<Vec<Vec<u8>>> {
+    let mut changes = Vec::new();
+    for (sx, sz) in ring {
+        if (cx - sx).abs() > 8 || (cz - sz).abs() > 8 {
+            continue;
+        }
+        let loaded = index.get(sx, sz);
+        let temporary;
+        let start = if let Some(start) = loaded {
+            start
+        } else {
+            temporary = provider
+                .stronghold_start_nbt(sx, sz)
+                .ok_or_else(|| io::Error::other("missing stronghold"))?;
+            &temporary
+        };
+        if let Some(Value::IntArray(bb)) = start.get("BB")
+            && bb.len() == 6
+            && (bb[0] > cx * 16 + 23
+                || bb[3] < cx * 16 + 8
+                || bb[2] > cz * 16 + 23
+                || bb[5] < cz * 16 + 8)
+        {
+            if loaded.is_none() {
+                changes.push(fastnbt::to_bytes(start).map_err(io::Error::other)?);
+            }
+            continue;
+        }
+        let mut next = start.clone();
+        super::stronghold::populate_start(&mut next, world, [cx, cz], rng)?;
+        if loaded.is_none() || next != *start {
+            changes.push(fastnbt::to_bytes(&next).map_err(io::Error::other)?);
+        }
+    }
+    Ok(changes)
+}
 fn column([x, _, z]: Pos) -> ColumnPos {
     (x >> 4, z >> 4)
 }
@@ -135,6 +181,10 @@ impl Changes {
 
 #[derive(Serialize, Deserialize)]
 struct Record {
+    #[serde(skip)]
+    holds: Vec<Vec<u8>>,
+    #[serde(skip)]
+    mines: MineDelta,
     owner: ColumnPos,
     generators: DecoratorState,
     columns: Vec<(ColumnPos, Changes)>,
@@ -337,6 +387,11 @@ impl BiomeWorld for Neighbors<'_> {
 /// Flush on the existing Anvil save worker. Failed snapshots keep all records
 /// queued for the next save. Each published batch is an atomic sequence.
 pub(crate) struct JournalWriter {
+    holds: StructureFile,
+    dirty_holds: bool,
+    mine_index: StructureFile,
+    world_dir: PathBuf,
+    dirty_index: bool,
     dir: PathBuf,
     _lease: File,
     rx: Receiver<Arc<Record>>,
@@ -347,16 +402,18 @@ impl JournalWriter {
     pub(crate) fn flush(&mut self) -> io::Result<()> {
         self.pending.extend(self.rx.try_iter().take(self.rx.len()));
         if self.pending.is_empty() {
-            return Ok(());
+            return self.save_index();
         }
         let mut tmp = tempfile::NamedTempFile::new_in(&self.dir)?;
         {
             let mut out = BufWriter::new(tmp.as_file_mut());
-            out.write_all(b"POP1")?;
+            out.write_all(b"POP3")?;
             bincode::serialize_into(&mut out, &(self.pending.len() as u64))
                 .map_err(io::Error::other)?;
             for rec in &self.pending {
                 bincode::serialize_into(&mut out, rec.as_ref()).map_err(io::Error::other)?;
+                bincode::serialize_into(&mut out, &rec.mines).map_err(io::Error::other)?;
+                bincode::serialize_into(&mut out, &rec.holds).map_err(io::Error::other)?;
             }
             out.flush()?;
         }
@@ -364,7 +421,27 @@ impl JournalWriter {
         tmp.persist_noclobber(self.dir.join(format!("{:016x}.bin", self.saved)))
             .map_err(|e| e.error)?;
         self.saved += self.pending.len();
+        for record in &self.pending {
+            record.mines.update(&mut self.mine_index)?;
+            for raw in &record.holds {
+                self.holds
+                    .insert(fastnbt::from_bytes(raw).map_err(io::Error::other)?)?;
+            }
+            self.dirty_holds |= !record.holds.is_empty();
+            self.dirty_index |= !record.mines.starts.is_empty();
+        }
         self.pending.clear();
+        self.save_index()
+    }
+    fn save_index(&mut self) -> io::Result<()> {
+        if self.dirty_holds {
+            self.holds.save(&self.world_dir)?;
+            self.dirty_holds = false;
+        }
+        if self.dirty_index {
+            self.mine_index.save(&self.world_dir)?;
+            self.dirty_index = false;
+        }
         Ok(())
     }
 }
@@ -372,6 +449,11 @@ impl JournalWriter {
 /// the biome generators' continuation state. A cached column can be evicted
 /// and reconstructed from its primer and the ordered records that touched it.
 pub(crate) struct Population {
+    holds: StructureFile,
+    pub(crate) ring: [ColumnPos; 3],
+    pub(crate) eye_targets: Arc<std::sync::RwLock<Vec<Pos>>>,
+    mine_index: StructureFile,
+    carts: BTreeMap<ColumnPos, BTreeMap<Pos, Value>>,
     provider: Arc<Overworld>,
     journal_tx: Option<Sender<Arc<Record>>>,
     pub(crate) journal: Option<JournalWriter>,
@@ -384,7 +466,23 @@ pub(crate) struct Population {
     clock: u64,
 }
 impl Population {
+    #[cfg(test)]
     pub(crate) fn open(seed: i64, path: Option<&Path>) -> io::Result<Self> {
+        Self::open_with_world(seed, path, path)
+    }
+    pub(crate) fn open_with_world(
+        seed: i64,
+        path: Option<&Path>,
+        world: Option<&Path>,
+    ) -> io::Result<Self> {
+        let mine_index = match world {
+            Some(root) => StructureFile::load(root, Family::Mineshaft)?,
+            None => StructureFile::empty(Family::Mineshaft),
+        };
+        let holds = match world {
+            Some(root) => StructureFile::load(root, Family::Stronghold)?,
+            None => StructureFile::empty(Family::Stronghold),
+        };
         let (journal_tx, journal) = if let Some(dir) = path {
             std::fs::create_dir_all(dir)?;
             let lease = File::options()
@@ -397,6 +495,11 @@ impl Population {
             (
                 Some(tx),
                 Some(JournalWriter {
+                    holds: holds.clone(),
+                    dirty_holds: false,
+                    mine_index: mine_index.clone(),
+                    world_dir: world.unwrap_or(dir).to_owned(),
+                    dirty_index: false,
                     dir: dir.to_owned(),
                     _lease: lease,
                     rx,
@@ -407,8 +510,14 @@ impl Population {
         } else {
             (None, None)
         };
+        let provider = Arc::new(Overworld::new(seed));
         let mut this = Self {
-            provider: Arc::new(Overworld::new(seed)),
+            ring: provider.stronghold_starts(),
+            holds,
+            eye_targets: Default::default(),
+            mine_index,
+            carts: BTreeMap::new(),
+            provider,
             journal_tx,
             journal,
             records: Vec::new(),
@@ -437,7 +546,7 @@ impl Population {
                     use std::io::Read;
                     let mut magic = [0; 4];
                     reader.read_exact(&mut magic)?;
-                    if &magic != b"POP1" {
+                    if &magic != b"POP1" && &magic != b"POP2" && &magic != b"POP3" {
                         return Err(io::Error::other("invalid population journal header"));
                     }
                     let count: u64 =
@@ -446,9 +555,17 @@ impl Population {
                         return Err(io::Error::other("empty population journal batch"));
                     }
                     for _ in 0..count {
-                        this.remember(
-                            bincode::deserialize_from(&mut reader).map_err(io::Error::other)?,
-                        )?;
+                        let mut record: Record =
+                            bincode::deserialize_from(&mut reader).map_err(io::Error::other)?;
+                        if &magic != b"POP1" {
+                            record.mines =
+                                bincode::deserialize_from(&mut reader).map_err(io::Error::other)?;
+                        }
+                        if &magic == b"POP3" {
+                            record.holds =
+                                bincode::deserialize_from(&mut reader).map_err(io::Error::other)?;
+                        }
+                        this.remember(record)?;
                     }
                     if reader.read(&mut [0; 1])? != 0 {
                         return Err(io::Error::other("trailing population journal bytes"));
@@ -459,8 +576,13 @@ impl Population {
             }
             if let Some(j) = &mut this.journal {
                 j.saved = this.records.len();
+                j.mine_index = this.mine_index.clone();
+                j.holds = this.holds.clone();
+                j.dirty_holds = this.records.iter().any(|r| !r.holds.is_empty());
+                j.dirty_index = this.records.iter().any(|r| !r.mines.starts.is_empty());
             }
         }
+        this.eye_targets = Arc::new(std::sync::RwLock::new(this.holds.reopened_eye_targets()?));
         Ok(this)
     }
     fn remember(&mut self, rec: Record) -> io::Result<()> {
@@ -468,6 +590,22 @@ impl Population {
             return Err(io::Error::other("duplicate population journal owner"));
         }
         self.generators = rec.generators.clone();
+        for raw in &rec.holds {
+            let fields: HashMap<String, Value> =
+                fastnbt::from_bytes(raw).map_err(io::Error::other)?;
+            if let (Some(Value::Int(cx)),Some(Value::Int(cz)),Some(Value::List(children)))=(fields.get("ChunkX"),fields.get("ChunkZ"),fields.get("Children"))
+                && self.holds.get(*cx,*cz).is_none()
+                && let Some(bb)=children.iter().find_map(|piece|match piece{Value::Compound(piece) if matches!(piece.get("id"),Some(Value::String(id)) if id=="SHPR")=>match piece.get("BB"){Some(Value::IntArray(bb)) if bb.len()==6=>Some(bb),_=>None},_=>None})
+            {self.eye_targets.write().map_err(|_|io::Error::other("eye target lock"))?.push(std::array::from_fn(|i|bb[i]+(bb[i+3]-bb[i]+1)/2));}
+            self.holds.insert(fields)?;
+        }
+        rec.mines.update(&mut self.mine_index)?;
+        for (pos, bytes) in &rec.mines.carts {
+            self.carts
+                .entry(column(*pos))
+                .or_default()
+                .insert(*pos, fastnbt::from_bytes(bytes).map_err(io::Error::other)?);
+        }
         for (pos, _) in &rec.columns {
             self.history
                 .entry(*pos)
@@ -593,8 +731,16 @@ impl Population {
     fn decorate_owner(&mut self, pos: ColumnPos) -> io::Result<()> {
         let mut world = Neighbors::new(&mut self.raw, pos);
         let mut generators = self.generators.clone();
+        let mut mines = Ok(MineDelta::default());
+        let mut holds = Ok(Vec::new());
         self.provider
-            .populate(&mut world, [pos.0, pos.1], &mut generators, |_, _| false);
+            .populate(&mut world, [pos.0, pos.1], &mut generators, |world, rng| {
+                if self.provider.structures {
+                    mines = mines::place(&self.mine_index, self.provider.seed, pos, world, rng);
+                    holds = place_holds(&self.provider, &self.holds, self.ring, pos, world, rng);
+                }
+                false
+            });
         let result = (|| {
             if world.outside.get() {
                 return Err(io::Error::other("population exceeded loaded neighbors"));
@@ -626,6 +772,8 @@ impl Population {
                 columns.push((pos, changes));
             }
             let rec = Record {
+                holds: holds?,
+                mines: mines?,
                 owner: pos,
                 generators,
                 columns,
@@ -755,6 +903,11 @@ impl Population {
             &mut col,
             raw.tiles.values().cloned().collect(),
             ticks,
+            self.carts
+                .get(&pos)
+                .into_iter()
+                .flat_map(|carts| carts.values().cloned())
+                .collect(),
         )?;
         Ok(col)
     }
@@ -763,6 +916,282 @@ impl Population {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn underground_population_on_official_carved_neighbors() -> io::Result<()> {
+        use std::io::Read;
+        for (hold, cx, cz, compressed) in [
+            (true, -44, 59, &include_bytes!("../../FONTS EXTRAS/vectors/T2.4b-2/stronghold/terrain.gz")[..]),
+            (false, -31, -32, &include_bytes!("../../FONTS EXTRAS/vectors/T2.4b-2/mineshaft/terrain.gz")[..]),
+        ] {
+            let mut population = Population::open(12345, None)?;
+            let mut start = if hold {
+                population.provider.stronghold_start_nbt(cx, cz)
+            } else {
+                super::super::mineshaft::start_nbt(12345, cx, cz)
+            }
+            .unwrap();
+            let Value::IntArray(bb) = &start["BB"] else {
+                panic!()
+            };
+            let bb: [i32; 6] = bb[..].try_into().unwrap();
+            let mut bytes = Vec::new();
+            GzDecoder::new(compressed).read_to_end(&mut bytes)?;
+            let mut input = &bytes[..];
+            let first = [(bb[0] - 8) >> 4, (bb[2] - 8) >> 4];
+            let last = [(bb[3] - 8) >> 4, (bb[5] - 8) >> 4];
+            let cols = (first[0] - 1..=last[0] + 2)
+                .flat_map(|x| (first[1] - 1..=last[1] + 2).map(move |z| (x, z)))
+                .collect::<Vec<_>>();
+            population.prepare(&cols)?;
+            for x in first[0]..=last[0] {
+                for z in first[1]..=last[1] {
+                    let mut world = Neighbors::new(&mut population.raw, (x, z));
+                    let mut rng = JavaRandom::new(super::super::population_seed(12345, x, z));
+                    if hold {
+                        super::super::stronghold::populate_start(
+                            &mut start,
+                            &mut world,
+                            [x, z],
+                            &mut rng,
+                        )?;
+                    } else {
+                        super::super::mineshaft::populate_start(
+                            &mut start,
+                            &mut world,
+                            [x, z],
+                            &mut rng,
+                            |_| {},
+                        )?;
+                    }
+                    assert!(!world.outside.get());
+                    let mut next = [0; 4];
+                    input.read_exact(&mut next)?;
+                    assert_eq!(
+                        rng.bits(32),
+                        u32::from_be_bytes(next),
+                        "rng hold={hold} {x},{z}"
+                    );
+                }
+            }
+            for y in bb[1] - 1..=bb[4] {
+                for z in bb[2]..=bb[5] {
+                    for x in bb[0]..=bb[3] {
+                        let p = [x, y, z];
+                        let mut block = [0; 2];
+                        input.read_exact(&mut block)?;
+                        assert_eq!(
+                            population.raw[&column(p)].states[index(p)],
+                            u16::from_be_bytes(block),
+                            "hold={hold} {x},{y},{z}"
+                        );
+                    }
+                }
+            }
+            if hold {
+                let expected: HashMap<String, Value> =
+                    fastnbt::from_bytes(input).map_err(io::Error::other)?;
+                let mut actual = HashMap::new();
+                for (&(x, z), col) in &population.raw {
+                    for (&i, tag) in &col.tiles {
+                        actual.insert(
+                            format!(
+                                "{},{},{}",
+                                x * 16 + (i & 15) as i32,
+                                i >> 8,
+                                z * 16 + ((i >> 4) & 15) as i32
+                            ),
+                            tag.clone(),
+                        );
+                    }
+                }
+                assert_eq!(actual, expected);
+            } else {
+                assert!(input.is_empty());
+            }
+        }
+        Ok(())
+    }
+    #[test]
+    fn explored_stronghold_reopens_with_library_portal_and_eye() -> io::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path();
+        let path = root.join("population");
+        let mut population = Population::open_with_world(12345, Some(&path), Some(root))?;
+        let start = population.provider.stronghold_start_nbt(-44, 59).unwrap();
+        let Value::List(children) = &start["Children"] else {
+            panic!()
+        };
+        let mut owners = BTreeSet::new();
+        for child in children {
+            let Value::Compound(fields) = child else {
+                panic!()
+            };
+            let Value::String(id) = &fields["id"] else {
+                panic!()
+            };
+            if id != "SHLi" && id != "SHPR" {
+                continue;
+            }
+            let Value::IntArray(bb) = &fields["BB"] else {
+                panic!()
+            };
+            for x in ((bb[0] - 8) >> 4)..=((bb[3] - 8) >> 4) {
+                for z in ((bb[2] - 8) >> 4)..=((bb[5] - 8) >> 4) {
+                    owners.insert((x, z));
+                }
+            }
+        }
+        for &owner in &owners {
+            population.populate_owner(owner)?;
+        }
+        assert_eq!(*population.eye_targets.read().unwrap(), [[-734, 44, 965]]);
+        let mut expected = BTreeMap::new();
+        for (&pos, col) in &population.raw {
+            if !col.tiles.is_empty() {
+                expected.insert(pos, col.tiles.clone());
+            }
+        }
+        let tags: Vec<_> = expected.values().flat_map(|tiles| tiles.values()).collect();
+        assert!(tags.iter().any(|tag|matches!(tag,Value::Compound(v) if matches!(v.get("EntityId"),Some(Value::String(id)) if id=="Silverfish"))));
+        assert!(tags.iter().any(|tag|matches!(tag,Value::Compound(v) if matches!(v.get("Items"),Some(Value::List(items)) if !items.is_empty()))));
+        population.journal.as_mut().unwrap().flush()?;
+        assert!(root.join("data/Stronghold.dat").is_file());
+        drop(population);
+        let mut reopened = Population::open_with_world(12345, Some(&path), Some(root))?;
+        assert_eq!(*reopened.eye_targets.read().unwrap(), [[-700, 43, 948]]);
+        for owner in owners {
+            reopened.populate_owner(owner)?;
+        }
+        let mut columns = BTreeMap::new();
+        for (&pos, tiles) in &expected {
+            reopened.ensure(pos)?;
+            assert_eq!(&reopened.raw[&pos].tiles, tiles);
+            columns.insert(pos, reopened.pack_column(pos)?);
+        }
+        let region = root.join("region");
+        crate::anvil::export(
+            &region,
+            &crate::arena::Template {
+                spawn_hint: None,
+                columns,
+            },
+            &Default::default(),
+        )?;
+        let restored = crate::anvil::import(&region)?;
+        for (pos, tiles) in expected {
+            let nbt: HashMap<String, Value> =
+                fastnbt::from_bytes(&restored.columns[&pos].nbt).map_err(io::Error::other)?;
+            let Value::Compound(level) = &nbt["Level"] else {
+                panic!()
+            };
+            assert_eq!(
+                level["TileEntities"],
+                Value::List(tiles.into_values().collect())
+            );
+        }
+        Ok(())
+    }
+    #[test]
+    fn mined_corridors_reopen_with_the_same_cart_and_spawner() -> io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path();
+        let path = root.join("population");
+        let mut population = Population::open_with_world(12345, Some(&path), Some(root))?;
+        let mut spider = None;
+        let mut found_cart = None;
+        for (sx, sz) in [
+            (-31, -32),
+            (-24, 4),
+            (-22, -4),
+            (-11, 30),
+            (22, -4),
+            (28, 29),
+        ] {
+            let start = crate::overworld::mineshaft::start_nbt(12345, sx, sz).unwrap();
+            let Value::IntArray(bb) = &start["BB"] else {
+                panic!()
+            };
+            for cx in ((bb[0] - 8) >> 4)..=((bb[3] - 8) >> 4) {
+                for cz in ((bb[2] - 8) >> 4)..=((bb[5] - 8) >> 4) {
+                    population.populate_owner((cx, cz))?;
+                    for (chunk, raw) in &population.raw {
+                        for (offset, tag) in &raw.tiles {
+                            if let Value::Compound(fields) = tag
+                                && matches!(fields.get("EntityId"),Some(Value::String(id)) if id=="CaveSpider")
+                            {
+                                spider = Some((*chunk, *offset, tag.clone()));
+                            }
+                        }
+                    }
+                    if let Some((chunk, carts)) = population.carts.first_key_value() {
+                        found_cart = Some((*chunk, carts.clone()));
+                    }
+                    if spider.is_some() && found_cart.is_some() {
+                        break;
+                    }
+                }
+                if spider.is_some() && found_cart.is_some() {
+                    break;
+                }
+            }
+            if spider.is_some() && found_cart.is_some() {
+                break;
+            }
+        }
+        let (cart_pos, expected_carts) = found_cart.expect("actual generated minecart");
+        let (spider_pos, offset, expected_spider) = spider.expect("actual generated spawner");
+        population.journal.as_mut().unwrap().flush()?;
+        assert!(root.join("data/Mineshaft.dat").is_file());
+        let owners = population.owners.len();
+        let original_owners: Vec<_> = population.owners.iter().copied().collect();
+        drop(population);
+        let mut reopened = Population::open_with_world(12345, Some(&path), Some(root))?;
+        for owner in original_owners {
+            reopened.populate_owner(owner)?;
+        }
+        reopened.ensure(cart_pos)?;
+        reopened.ensure(spider_pos)?;
+        assert_eq!(reopened.owners.len(), owners);
+        assert_eq!(reopened.raw[&spider_pos].tiles[&offset], expected_spider);
+        assert_eq!(reopened.carts[&cart_pos], expected_carts);
+        let col = reopened.pack_column(cart_pos)?;
+        let nbt: HashMap<String, Value> =
+            fastnbt::from_bytes(&col.nbt).map_err(io::Error::other)?;
+        let Value::Compound(level) = &nbt["Level"] else {
+            panic!()
+        };
+        assert_eq!(
+            level["Entities"],
+            Value::List(expected_carts.into_values().collect())
+        );
+        let mut columns = BTreeMap::from([(cart_pos, col)]);
+        columns.insert(spider_pos, reopened.pack_column(spider_pos)?);
+        let mut region = crate::arena::Template {
+            spawn_hint: None,
+            columns,
+        };
+        let region_dir = root.join("region");
+        for _ in 0..2 {
+            crate::anvil::export(&region_dir, &region, &crate::anvil::Edits::new())?;
+            region = crate::anvil::import(&region_dir)?;
+            let cart: HashMap<String, Value> =
+                fastnbt::from_bytes(&region.columns[&cart_pos].nbt).map_err(io::Error::other)?;
+            assert_eq!(cart["Level"], nbt["Level"]);
+            let spider: HashMap<String, Value> =
+                fastnbt::from_bytes(&region.columns[&spider_pos].nbt).map_err(io::Error::other)?;
+            let Value::Compound(spider) = &spider["Level"] else {
+                panic!()
+            };
+            let Value::List(tiles) = &spider["TileEntities"] else {
+                panic!()
+            };
+            assert_eq!(
+                tiles.iter().filter(|tag| **tag == expected_spider).count(),
+                1
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     #[ignore = "release performance measurement"]

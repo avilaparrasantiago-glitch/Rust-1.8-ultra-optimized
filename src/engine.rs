@@ -320,10 +320,13 @@ impl Manager {
             Arc::new(terrain)
         });
         let mut population = if revision == 3 && dimension == 0 {
-            Some(crate::overworld::populated::Population::open(
+            Some(crate::overworld::populated::Population::open_with_world(
                 self.seed,
                 persistent
                     .then_some(dir.with_file_name("population"))
+                    .as_deref(),
+                persistent
+                    .then_some(self.cfg.data_dir.join(name))
                     .as_deref(),
             )?)
         } else {
@@ -393,6 +396,9 @@ impl Manager {
         if dimension == 1 && revision == 2 {
             crate::anvil::load_end_crystals(&template, &mut entities)?;
         }
+        let live_eyes = population
+            .as_ref()
+            .map(|population| (population.ring, population.eye_targets.clone()));
         let generation = normal
             .then(|| {
                 generation::Generation::new(
@@ -407,8 +413,23 @@ impl Manager {
             .transpose()?;
         let mut world = World::new(name.into(), template);
         world.edits = edits;
-        let strongholds = (normal && !legacy && dimension == 0)
-            .then(|| crate::overworld::Overworld::new(self.seed).stronghold_starts());
+        let strongholds = if normal && !legacy && dimension == 0 && live_eyes.is_some() {
+            live_eyes
+        } else if normal && !legacy && dimension == 0 {
+            use crate::anvil::structures::{Family, StructureFile};
+            let loaded = if persistent {
+                StructureFile::load(&self.cfg.data_dir.join(name), Family::Stronghold)?
+                    .reopened_eye_targets()?
+            } else {
+                Vec::new()
+            };
+            Some((
+                crate::overworld::Overworld::new(self.seed).stronghold_starts(),
+                Arc::new(std::sync::RwLock::new(loaded)),
+            ))
+        } else {
+            None
+        };
         let handle = std::thread::Builder::new()
             .name(format!("world-{name}"))
             .spawn(move || {
@@ -469,8 +490,10 @@ impl Manager {
     }
 }
 
+type EyeLocations = ([(i32, i32); 3], Arc<std::sync::RwLock<Vec<[i32; 3]>>>);
+
 pub struct Room {
-    strongholds: Option<[(i32, i32); 3]>,
+    strongholds: Option<EyeLocations>,
     dimension: i32,
     end_origin_pending: bool,
     generation: Option<generation::Generation>,
@@ -1155,25 +1178,32 @@ impl Room {
                 if player.hp > 0.
                     && matches!(player.mode, 0..=2)
                     && player.inv.slots[slot].is_some_and(|s| s.id == 381)
-                    && let Some(starts) = self.strongholds
+                    && let Some((starts, loaded)) = &self.strongholds
                 {
-                    let pos = player.pos;
-                    let target = starts
-                        .map(|(x, z)| [f64::from(x * 16 + 8), 64., f64::from(z * 16 + 8)])
-                        .into_iter()
-                        .min_by(|a, b| distance(pos, *a).total_cmp(&distance(pos, *b)));
-                    if let Some(target) = target {
-                        let mut origin = player.pos;
-                        origin[1] += 0.81;
-                        if self
-                            .entities
-                            .insert(crate::entities::Entity::ender_eye(origin, target))
-                            .is_ok()
-                            && player.mode != 1
-                        {
-                            crate::crafting::consume(&mut player.inv.slots[slot]);
-                            player.send(p::slot(0, slot as i16, player.inv.slots[slot]));
-                        }
+                    let pos = player.pos.map(f64::floor);
+                    let loaded = loaded.read().ok()?;
+                    let target = loaded
+                        .iter()
+                        .map(|point| point.map(f64::from))
+                        .min_by(|a, b| distance(pos, *a).total_cmp(&distance(pos, *b)))
+                        .unwrap_or_else(|| {
+                            let (x, y, z) = crate::overworld::stronghold::unexplored_eye_target(
+                                *starts,
+                                pos[0] as i32,
+                                pos[2] as i32,
+                            );
+                            [f64::from(x), f64::from(y), f64::from(z)]
+                        });
+                    let mut origin = player.pos;
+                    origin[1] += 0.81;
+                    if self
+                        .entities
+                        .insert(crate::entities::Entity::ender_eye(origin, target))
+                        .is_ok()
+                        && player.mode != 1
+                    {
+                        crate::crafting::consume(&mut player.inv.slots[slot]);
+                        player.send(p::slot(0, slot as i16, player.inv.slots[slot]));
                     }
                 }
             }

@@ -41,7 +41,7 @@ fn choose<T>(r: &mut JavaRandom, entries: &[T], weight: impl Fn(&T) -> i32) -> u
         .expect("positive weight sum")
 }
 
-fn book(r: &mut JavaRandom) -> Value {
+pub(super) fn book(r: &mut JavaRandom) -> Value {
     r.bounded(1);
     r.bounded(1);
     let modifier = (r.float() + r.float() - 1.) * 0.15;
@@ -109,7 +109,7 @@ fn spawner(r: &mut JavaRandom, pos: Pos) -> Value {
     Value::Compound(nbt)
 }
 
-fn chest_facing(w: &impl DungeonWorld, p: Pos) -> u16 {
+pub(super) fn chest_facing(w: &impl DungeonWorld, p: Pos) -> u16 {
     let [x, y, z] = p;
     let neighbors = [[x, y, z - 1], [x, y, z + 1], [x - 1, y, z], [x + 1, y, z]];
     if neighbors.iter().any(|&n| w.state(n) >> 4 == 54) {

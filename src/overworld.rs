@@ -13,6 +13,55 @@ mod dimensions;
 pub mod fortress;
 mod nether_population;
 mod temple;
+pub mod mineshaft;
+pub mod stronghold;
+pub mod structure_fixtures;
+
+#[cfg(test)]
+mod reference_layout {
+    use super::*;
+    use fastnbt::Value;
+    use std::{collections::HashMap, io::Read};
+
+    fn compare(actual: HashMap<String, Value>, gzip: &[u8]) {
+        let mut raw = Vec::new();
+        flate2::read::GzDecoder::new(gzip).read_to_end(&mut raw).unwrap();
+        let expected: HashMap<String, Value> = fastnbt::from_bytes(&raw).unwrap();
+        let (Value::List(actual_children), Value::List(expected_children)) =
+            (&actual["Children"], &expected["Children"]) else { panic!("missing children") };
+        for (index, (piece, reference)) in actual_children.iter().zip(expected_children).enumerate() {
+            assert_eq!(piece, reference, "piece {index}");
+        }
+        assert_eq!(actual_children.len(), expected_children.len());
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn official_mine_layout() {
+        for (cx, cz, expected) in [
+            (-31, -32, &include_bytes!("../FONTS EXTRAS/vectors/T2.4b-2/Mineshaft.nbt.gz")[..]),
+            (-24, 4, include_bytes!("../FONTS EXTRAS/vectors/T2.4b-2/mineshaft--24-4.nbt.gz")),
+            (-22, -4, include_bytes!("../FONTS EXTRAS/vectors/T2.4b-2/mineshaft--22--4.nbt.gz")),
+            (-11, 30, include_bytes!("../FONTS EXTRAS/vectors/T2.4b-2/mineshaft--11-30.nbt.gz")),
+            (22, -4, include_bytes!("../FONTS EXTRAS/vectors/T2.4b-2/mineshaft-22--4.nbt.gz")),
+            (28, 29, include_bytes!("../FONTS EXTRAS/vectors/T2.4b-2/mineshaft-28-29.nbt.gz")),
+        ] {
+            compare(mineshaft::start_nbt(12345, cx, cz).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn official_stronghold_layout() {
+        let overworld = Overworld::new(12345);
+        for (cx, cz, expected) in [
+            (-44, 59, &include_bytes!("../FONTS EXTRAS/vectors/T2.4b-2/Stronghold.nbt.gz")[..]),
+            (-16, -38, include_bytes!("../FONTS EXTRAS/vectors/T2.4b-2/stronghold--16--38.nbt.gz")),
+            (61, 18, include_bytes!("../FONTS EXTRAS/vectors/T2.4b-2/stronghold-61-18.nbt.gz")),
+        ] {
+            compare(overworld.stronghold_start_nbt(cx, cz).unwrap(), expected);
+        }
+    }
+}
 mod spikes;
 pub use spikes::{EndSpike, SpikeGenerator};
 mod noise;
@@ -146,13 +195,17 @@ pub fn population_seed(world: i64, chunk_x: i32, chunk_z: i32) -> i64 {
 
 /// MapGenMineshaft's DEFAULT start predicate, before constructing any pieces.
 pub fn mineshaft_start(seed: i64, x: i32, z: i32) -> bool {
+    mineshaft_random(seed, x, z).is_some()
+}
+
+fn mineshaft_random(seed: i64, x: i32, z: i32) -> Option<JavaRandom> {
     let mut world = JavaRandom::new(seed);
     let chunk_seed =
         seed ^ world.long().wrapping_mul(i64::from(x)) ^ world.long().wrapping_mul(i64::from(z));
     let mut chunk = JavaRandom::new(chunk_seed);
     // MapGenStructure consumes one unbounded integer before calling the predicate.
     chunk.bits(32);
-    chunk.double() < 0.004 && chunk.bounded(80) < x.wrapping_abs().max(z.wrapping_abs())
+    (chunk.double() < 0.004 && chunk.bounded(80) < x.wrapping_abs().max(z.wrapping_abs())).then_some(chunk)
 }
 
 pub enum StructureGrid {

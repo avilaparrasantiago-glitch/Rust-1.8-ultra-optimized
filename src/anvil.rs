@@ -11,6 +11,8 @@ use std::{
     sync::OnceLock,
 };
 
+pub mod structures;
+
 const SECTOR: usize = 4096;
 const MAX_NBT: usize = 4 << 20;
 type Compound = HashMap<String, Value>;
@@ -539,8 +541,9 @@ pub(crate) fn store_overworld_tiles(
     col: &mut Column,
     tiles: Vec<Value>,
     ticks: Vec<Value>,
+    entities: Vec<Value>,
 ) -> io::Result<()> {
-    if tiles.is_empty() && ticks.is_empty() {
+    if tiles.is_empty() && ticks.is_empty() && entities.is_empty() {
         return Ok(());
     }
     let level = Compound::from([
@@ -548,7 +551,7 @@ pub(crate) fn store_overworld_tiles(
         ("TileTicks".into(), Value::List(ticks)),
     ]);
     col.spawners = spawners_in_level(pos, &level)?;
-    col.nbt = encode_level(pos, col, None, Vec::new(), Compound::new(), level)?;
+    col.nbt = encode_level(pos, col, None, entities, Compound::new(), level)?;
     Ok(())
 }
 

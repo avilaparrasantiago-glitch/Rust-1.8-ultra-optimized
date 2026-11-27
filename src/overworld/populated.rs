@@ -1,3 +1,5 @@
+use super::monument::MonumentChanges;
+use super::temple::scattered::{ScatteredChanges, structure_mob};
 use super::{
     JavaRandom, Overworld,
     column::pack,
@@ -182,12 +184,46 @@ impl Changes {
 #[derive(Serialize, Deserialize)]
 struct Record {
     #[serde(skip)]
+    features_enabled: bool,
+    #[serde(skip)]
+    monument: MonumentChanges,
+    #[serde(skip)]
+    scattered: ScatteredChanges,
+    #[serde(skip)]
+    pyramid_chests: Vec<[i32; 3]>,
+    #[serde(skip)]
     holds: Vec<Vec<u8>>,
     #[serde(skip)]
     mines: MineDelta,
     owner: ColumnPos,
     generators: DecoratorState,
     columns: Vec<(ColumnPos, Changes)>,
+}
+impl Record {
+    fn update_features(
+        &self,
+        provider: &Overworld,
+        features: &mut [(Family, StructureFile, bool); 2],
+    ) -> io::Result<()> {
+        if !self.features_enabled {
+            return Ok(());
+        }
+        for (family, file, dirty) in features {
+            *dirty |= provider.discover_features(*family, self.owner, file)?;
+            if *family == Family::Monument && !self.monument.starts.is_empty() {
+                self.monument.apply(file)?;
+                *dirty = true;
+            }
+            if *family == Family::Temple
+                && (!self.pyramid_chests.is_empty() || !self.scattered.starts.is_empty())
+            {
+                self.scattered.apply(file)?;
+                file.record_pyramid_chests(&self.pyramid_chests)?;
+                *dirty = true;
+            }
+        }
+        Ok(())
+    }
 }
 struct Neighbors<'a> {
     origin: ColumnPos,
@@ -305,8 +341,11 @@ impl DungeonWorld for Neighbors<'_> {
         PlantWorld::full_block(self, p)
     }
     fn set_tile(&mut self, p: Pos, nbt: Value) {
-        if let Some(c) = self.get_mut(column(p)) {
+        if let Some(slot) = self.slot(column(p))
+            && let Some(c) = self.columns[slot].as_deref_mut()
+        {
             c.tiles.insert(index(p), nbt);
+            self.dirty[slot].push(index(p) as u16);
         }
     }
 }
@@ -387,6 +426,8 @@ impl BiomeWorld for Neighbors<'_> {
 /// Flush on the existing Anvil save worker. Failed snapshots keep all records
 /// queued for the next save. Each published batch is an atomic sequence.
 pub(crate) struct JournalWriter {
+    provider: Overworld,
+    features: [(Family, StructureFile, bool); 2],
     holds: StructureFile,
     dirty_holds: bool,
     mine_index: StructureFile,
@@ -407,13 +448,18 @@ impl JournalWriter {
         let mut tmp = tempfile::NamedTempFile::new_in(&self.dir)?;
         {
             let mut out = BufWriter::new(tmp.as_file_mut());
-            out.write_all(b"POP3")?;
+            out.write_all(b"POP4")?;
             bincode::serialize_into(&mut out, &(self.pending.len() as u64))
                 .map_err(io::Error::other)?;
             for rec in &self.pending {
                 bincode::serialize_into(&mut out, rec.as_ref()).map_err(io::Error::other)?;
                 bincode::serialize_into(&mut out, &rec.mines).map_err(io::Error::other)?;
                 bincode::serialize_into(&mut out, &rec.holds).map_err(io::Error::other)?;
+                bincode::serialize_into(&mut out, &rec.pyramid_chests).map_err(io::Error::other)?;
+                bincode::serialize_into(&mut out, &rec.scattered).map_err(io::Error::other)?;
+                bincode::serialize_into(&mut out, &rec.monument).map_err(io::Error::other)?;
+                bincode::serialize_into(&mut out, &rec.features_enabled)
+                    .map_err(io::Error::other)?;
             }
             out.flush()?;
         }
@@ -422,6 +468,7 @@ impl JournalWriter {
             .map_err(|e| e.error)?;
         self.saved += self.pending.len();
         for record in &self.pending {
+            record.update_features(&self.provider, &mut self.features)?;
             record.mines.update(&mut self.mine_index)?;
             for raw in &record.holds {
                 self.holds
@@ -434,6 +481,12 @@ impl JournalWriter {
         self.save_index()
     }
     fn save_index(&mut self) -> io::Result<()> {
+        for (_, file, dirty) in &mut self.features {
+            if *dirty {
+                file.save(&self.world_dir)?;
+                *dirty = false;
+            }
+        }
         if self.dirty_holds {
             self.holds.save(&self.world_dir)?;
             self.dirty_holds = false;
@@ -449,6 +502,9 @@ impl JournalWriter {
 /// the biome generators' continuation state. A cached column can be evicted
 /// and reconstructed from its primer and the ordered records that touched it.
 pub(crate) struct Population {
+    temples: StructureFile,
+    monuments: StructureFile,
+    structure_mobs: BTreeMap<ColumnPos, BTreeMap<Pos, Value>>,
     holds: StructureFile,
     pub(crate) ring: [ColumnPos; 3],
     pub(crate) eye_targets: Arc<std::sync::RwLock<Vec<Pos>>>,
@@ -483,6 +539,7 @@ impl Population {
             Some(root) => StructureFile::load(root, Family::Stronghold)?,
             None => StructureFile::empty(Family::Stronghold),
         };
+        let provider = Arc::new(Overworld::new(seed));
         let (journal_tx, journal) = if let Some(dir) = path {
             std::fs::create_dir_all(dir)?;
             let lease = File::options()
@@ -495,6 +552,19 @@ impl Population {
             (
                 Some(tx),
                 Some(JournalWriter {
+                    provider: Overworld::new(seed),
+                    features: [
+                        (
+                            Family::Temple,
+                            StructureFile::load(world.unwrap_or(dir), Family::Temple)?,
+                            false,
+                        ),
+                        (
+                            Family::Monument,
+                            StructureFile::load(world.unwrap_or(dir), Family::Monument)?,
+                            false,
+                        ),
+                    ],
                     holds: holds.clone(),
                     dirty_holds: false,
                     mine_index: mine_index.clone(),
@@ -510,8 +580,17 @@ impl Population {
         } else {
             (None, None)
         };
-        let provider = Arc::new(Overworld::new(seed));
+
         let mut this = Self {
+            structure_mobs: BTreeMap::new(),
+            monuments: match world {
+                Some(root) => StructureFile::load(root, Family::Monument)?,
+                None => StructureFile::empty(Family::Monument),
+            },
+            temples: match world {
+                Some(root) => StructureFile::load(root, Family::Temple)?,
+                None => StructureFile::empty(Family::Temple),
+            },
             ring: provider.stronghold_starts(),
             holds,
             eye_targets: Default::default(),
@@ -546,7 +625,11 @@ impl Population {
                     use std::io::Read;
                     let mut magic = [0; 4];
                     reader.read_exact(&mut magic)?;
-                    if &magic != b"POP1" && &magic != b"POP2" && &magic != b"POP3" {
+                    if &magic != b"POP1"
+                        && &magic != b"POP2"
+                        && &magic != b"POP3"
+                        && &magic != b"POP4"
+                    {
                         return Err(io::Error::other("invalid population journal header"));
                     }
                     let count: u64 =
@@ -561,8 +644,18 @@ impl Population {
                             record.mines =
                                 bincode::deserialize_from(&mut reader).map_err(io::Error::other)?;
                         }
-                        if &magic == b"POP3" {
+                        if &magic == b"POP3" || &magic == b"POP4" {
                             record.holds =
+                                bincode::deserialize_from(&mut reader).map_err(io::Error::other)?;
+                        }
+                        if &magic == b"POP4" {
+                            record.pyramid_chests =
+                                bincode::deserialize_from(&mut reader).map_err(io::Error::other)?;
+                            record.scattered =
+                                bincode::deserialize_from(&mut reader).map_err(io::Error::other)?;
+                            record.monument =
+                                bincode::deserialize_from(&mut reader).map_err(io::Error::other)?;
+                            record.features_enabled =
                                 bincode::deserialize_from(&mut reader).map_err(io::Error::other)?;
                         }
                         this.remember(record)?;
@@ -575,6 +668,9 @@ impl Population {
                 }
             }
             if let Some(j) = &mut this.journal {
+                for record in &this.records {
+                    record.update_features(&this.provider, &mut j.features)?;
+                }
                 j.saved = this.records.len();
                 j.mine_index = this.mine_index.clone();
                 j.holds = this.holds.clone();
@@ -588,6 +684,24 @@ impl Population {
     fn remember(&mut self, rec: Record) -> io::Result<()> {
         if !self.owners.insert(rec.owner) {
             return Err(io::Error::other("duplicate population journal owner"));
+        }
+        if !rec.pyramid_chests.is_empty() {
+            self.provider
+                .discover_features(Family::Temple, rec.owner, &mut self.temples)?;
+            self.temples.record_pyramid_chests(&rec.pyramid_chests)?;
+        }
+        rec.scattered.apply(&mut self.temples)?;
+        rec.monument.apply(&mut self.monuments)?;
+        for (positions, elder) in [
+            (&rec.scattered.witches, false),
+            (&rec.monument.elders, true),
+        ] {
+            for &pos in positions {
+                self.structure_mobs
+                    .entry(column(pos))
+                    .or_default()
+                    .insert(pos, structure_mob(self.provider.seed, pos, elder)?);
+            }
         }
         self.generators = rec.generators.clone();
         for raw in &rec.holds {
@@ -729,6 +843,13 @@ impl Population {
         self.decorate_owner(pos)
     }
     fn decorate_owner(&mut self, pos: ColumnPos) -> io::Result<()> {
+        let mut monument = Ok(MonumentChanges::default());
+        self.provider
+            .discover_features(Family::Monument, pos, &mut self.monuments)?;
+        let mut scattered = Ok(ScatteredChanges::default());
+        let mut pyramid_chests = Vec::new();
+        self.provider
+            .discover_features(Family::Temple, pos, &mut self.temples)?;
         let mut world = Neighbors::new(&mut self.raw, pos);
         let mut generators = self.generators.clone();
         let mut mines = Ok(MineDelta::default());
@@ -738,6 +859,13 @@ impl Population {
                 if self.provider.structures {
                     mines = mines::place(&self.mine_index, self.provider.seed, pos, world, rng);
                     holds = place_holds(&self.provider, &self.holds, self.ring, pos, world, rng);
+                    pyramid_chests = self.provider.pyramid_chests(&self.temples, pos, world, rng);
+                    scattered = self
+                        .provider
+                        .scattered_pieces(&self.temples, pos, world, rng);
+                    monument = self
+                        .provider
+                        .monument_pieces(&self.monuments, pos, world, rng);
                 }
                 false
             });
@@ -772,6 +900,10 @@ impl Population {
                 columns.push((pos, changes));
             }
             let rec = Record {
+                features_enabled: self.provider.structures,
+                scattered: scattered?,
+                monument: monument?,
+                pyramid_chests,
                 holds: holds?,
                 mines: mines?,
                 owner: pos,
@@ -907,6 +1039,12 @@ impl Population {
                 .get(&pos)
                 .into_iter()
                 .flat_map(|carts| carts.values().cloned())
+                .chain(
+                    self.structure_mobs
+                        .get(&pos)
+                        .into_iter()
+                        .flat_map(|m| m.values().cloned()),
+                )
                 .collect(),
         )?;
         Ok(col)
@@ -917,11 +1055,129 @@ impl Population {
 mod tests {
     use super::*;
     #[test]
+    fn generated_structure_mobs_survive_anvil_reopening() -> io::Result<()> {
+        for (start, family, mob, count) in [
+            ((146, -509), Family::Temple, "Witch", 1),
+            ((-249, -508), Family::Monument, "Guardian", 3),
+        ] {
+            let root = tempfile::tempdir()?;
+            let log = root.path().join("population");
+            let mut expected = BTreeMap::new();
+            for pass in 0..2 {
+                let mut p = Population::open_with_world(12345, Some(&log), Some(root.path()))?;
+                let mut data = StructureFile::load(root.path(), family)?;
+                p.provider.discover_features(family, start, &mut data)?;
+                let Some(Value::IntArray(b)) = data.get(start.0, start.1).and_then(|s| s.get("BB"))
+                else {
+                    panic!("missing start")
+                };
+                for x in ((b[0] - 8) >> 4)..=((b[3] - 8) >> 4) {
+                    for z in ((b[2] - 8) >> 4)..=((b[5] - 8) >> 4) {
+                        p.populate_owner((x, z))?;
+                    }
+                }
+                p.journal.as_mut().unwrap().flush()?;
+                let columns: Vec<_> = p.structure_mobs.keys().copied().collect();
+                let mut found = BTreeMap::new();
+                for col in columns {
+                    p.ensure(col)?;
+                    let packed = p.pack_column(col)?;
+                    let nbt: HashMap<String, Value> =
+                        fastnbt::from_bytes(&packed.nbt).map_err(io::Error::other)?;
+                    let Value::Compound(level) = &nbt["Level"] else {
+                        panic!()
+                    };
+                    let Value::List(entities) = &level["Entities"] else {
+                        panic!()
+                    };
+                    for e in entities {
+                        let Value::Compound(tag) = e else { panic!() };
+                        if tag.get("id") != Some(&Value::String(mob.into())) {
+                            continue;
+                        }
+                        let Value::Long(uuid) = tag["UUIDLeast"] else {
+                            panic!()
+                        };
+                        assert_eq!(tag.get("Elder") == Some(&Value::Byte(1)), mob == "Guardian");
+                        assert!(found.insert(uuid, e.clone()).is_none());
+                    }
+                }
+                assert_eq!(found.len(), count);
+                if pass == 0 {
+                    expected = found;
+                } else {
+                    assert_eq!(found, expected);
+                }
+            }
+        }
+        Ok(())
+    }
+    #[test]
+    fn pyramid_chests_and_trap_survive_reopening() -> io::Result<()> {
+        let root = tempfile::tempdir()?;
+        let journal = root.path().join("population");
+        let pos = (-191, -493);
+        let mut expected: HashMap<String, Value> = fastnbt::from_reader(GzDecoder::new(
+            &include_bytes!("../../FONTS EXTRAS/vectors/T2.4b-3/desert-loot.nbt.gz")[..],
+        ))
+        .map_err(io::Error::other)?;
+        expected.remove("Next");
+        for _ in 0..2 {
+            let mut population =
+                Population::open_with_world(12345, Some(&journal), Some(root.path()))?;
+            population.populate_owner(pos)?;
+            population.ensure(pos)?;
+            let col = &population.raw[&pos];
+            for z in 9..=11 {
+                for x in 9..=11 {
+                    assert_eq!(col.states[index([x, 51, z])], 46 << 4);
+                }
+            }
+            assert_eq!(col.states[index([10, 53, 10])], 70 << 4);
+            for (key, nbt) in &expected {
+                let Value::Compound(tag) = nbt else {
+                    panic!("invalid reference chest")
+                };
+                let xyz = ["x", "y", "z"].map(|axis| match tag[axis] {
+                    Value::Int(v) => v,
+                    _ => panic!("invalid reference position"),
+                });
+                assert_eq!(col.tiles.get(&index(xyz)), Some(nbt), "{key}");
+            }
+            population.journal.as_mut().unwrap().flush()?;
+            let saved = StructureFile::load(root.path(), Family::Temple)?;
+            let Some(Value::List(children)) = saved
+                .get(pos.0, pos.1)
+                .and_then(|start| start.get("Children"))
+            else {
+                panic!("missing pyramid")
+            };
+            let Value::Compound(piece) = &children[0] else {
+                panic!("missing piece")
+            };
+            for flag in 0..4 {
+                assert_eq!(piece[&format!("hasPlacedChest{flag}")], Value::Byte(1));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn underground_population_on_official_carved_neighbors() -> io::Result<()> {
         use std::io::Read;
         for (hold, cx, cz, compressed) in [
-            (true, -44, 59, &include_bytes!("../../FONTS EXTRAS/vectors/T2.4b-2/stronghold/terrain.gz")[..]),
-            (false, -31, -32, &include_bytes!("../../FONTS EXTRAS/vectors/T2.4b-2/mineshaft/terrain.gz")[..]),
+            (
+                true,
+                -44,
+                59,
+                &include_bytes!("../../FONTS EXTRAS/vectors/T2.4b-2/stronghold/terrain.gz")[..],
+            ),
+            (
+                false,
+                -31,
+                -32,
+                &include_bytes!("../../FONTS EXTRAS/vectors/T2.4b-2/mineshaft/terrain.gz")[..],
+            ),
         ] {
             let mut population = Population::open(12345, None)?;
             let mut start = if hold {

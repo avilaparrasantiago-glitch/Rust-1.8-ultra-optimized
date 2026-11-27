@@ -13,6 +13,9 @@ mod dimensions;
 pub mod fortress;
 mod nether_population;
 mod temple;
+mod monument;
+#[cfg(test)]
+mod scattered_fixtures;
 pub mod mineshaft;
 pub mod stronghold;
 pub mod structure_fixtures;

@@ -44,7 +44,7 @@ Replace legacy epoll syscall overhead with Linux io\_uring (tokio-uring or glomm
 
 
 
-Implement a Thread-per-Core I/O and compute pool with explicit CPU core pinning (`core\\\_affinity`). Communicate across I/O threads and world simulation workers exclusively via lock-free SPSC/MPMC channels (crossbeam / flume), eliminating `Mutex` contention.
+Implement a Thread-per-Core I/O and compute pool with explicit CPU core pinning (`core\_affinity`). Communicate across I/O threads and world simulation workers exclusively via lock-free SPSC/MPMC channels (crossbeam / flume), eliminating `Mutex` contention.
 
 
 
@@ -61,12 +61,12 @@ Unify isolated minigame rooms and massive event/lobby worlds under a single adap
 |Tier|Concurrent Players|Compute Execution (`rayon`)|Spatial Partition \& BVH|Visible Entity Cap / Client|Network Update Cadence (Near / Mid / Far)|World Simulation Profile|
 |-|-|-|-|-|-|-|
 |**Tier 0** *(Micro-Room)*|**1 – 150**|**1 core** sequential (zero barrier overhead)|Column visibility grid|Unlimited (all in frustum)|20 Hz / 10 Hz / 5 Hz|**100% Vanilla:** full redstone, mobs, `randomTicks` and Anvil persistence.|
-|**Tier 1** *(Lobby / War)*|**151 – 500**|**2–4 cores** `rayon`|$256 \\times 256$ cells + basic BVH|**150** players|20 Hz / 10 Hz / 4 Hz|Full redstone and physics; `randomTicks` scoped to player-occupied chunks.|
-|**Tier 2** *(Small Event)*|**501 – 1,000**|**4–8 cores** `rayon`|$192 \\times 192$ cells + Proxy BVH|**120** players|20 Hz / 8 Hz / 2 Hz|Disable ambient `randomTicks` and passive mob spawning; bounded redstone active.|
-|**Tier 3** *(Medium Event)*|**1,001 – 3,000**|**8–12 cores** `rayon`|$128 \\times 128$ cells + Proxy BVH|**100** players|20 Hz (<12b) / 6 Hz / 2 Hz|Freeze continuous Anvil disk writes (shared read-only `Arc<Column>` in RAM) except manual saves.|
-|**Tier 4** *(Mega-Event)*|**3,001 – 5,000**|**16 cores** `rayon` (all physical cores)|$96 \\times 96$ cells + strict BVH|**85** players|20 Hz (<10b) / 5 Hz / 1 Hz|Disable non-essential heavy redstone and player-player soft pushing (keep block collision \& combat).|
-|**Tier 5** *(Massive Scale)*|**5,001 – 8,000**|**16–24 cores** `rayon` + aggressive `rkyv` batching|$64 \\times 64$ cells + strict BVH|**70** players|20 Hz (<8b) / 4 Hz / 1 Hz|PvP combat, projectiles, Luau abilities and movement only; disable mob AI and distant item physics.|
-|**Tier 6** *(Record Cap)*|**8,001 – 10,000+**|**All cores** + max I/O priority|$64 \\times 64$ cells + *Spatial Bucket*|**60** players|20 Hz (<8b) / 4 Hz / 0.5 Hz|Strict per-cell combat/tick budget (`massive\\\_mode`) guaranteeing deterministic **20.00 TPS**.|
+|**Tier 1** *(Lobby / War)*|**151 – 500**|**2–4 cores** `rayon`|$256 \times 256$ cells + basic BVH|**150** players|20 Hz / 10 Hz / 4 Hz|Full redstone and physics; `randomTicks` scoped to player-occupied chunks.|
+|**Tier 2** *(Small Event)*|**501 – 1,000**|**4–8 cores** `rayon`|$192 \times 192$ cells + Proxy BVH|**120** players|20 Hz / 8 Hz / 2 Hz|Disable ambient `randomTicks` and passive mob spawning; bounded redstone active.|
+|**Tier 3** *(Medium Event)*|**1,001 – 3,000**|**8–12 cores** `rayon`|$128 \times 128$ cells + Proxy BVH|**100** players|20 Hz (<12b) / 6 Hz / 2 Hz|Freeze continuous Anvil disk writes (shared read-only `Arc<Column>` in RAM) except manual saves.|
+|**Tier 4** *(Mega-Event)*|**3,001 – 5,000**|**16 cores** `rayon` (all physical cores)|$96 \times 96$ cells + strict BVH|**85** players|20 Hz (<10b) / 5 Hz / 1 Hz|Disable non-essential heavy redstone and player-player soft pushing (keep block collision \& combat).|
+|**Tier 5** *(Massive Scale)*|**5,001 – 8,000**|**16–24 cores** `rayon` + aggressive `rkyv` batching|$64 \times 64$ cells + strict BVH|**70** players|20 Hz (<8b) / 4 Hz / 1 Hz|PvP combat, projectiles, Luau abilities and movement only; disable mob AI and distant item physics.|
+|**Tier 6** *(Record Cap)*|**8,001 – 10,000+**|**All cores** + max I/O priority|$64 \times 64$ cells + *Spatial Bucket*|**60** players|20 Hz (<8b) / 4 Hz / 0.5 Hz|Strict per-cell combat/tick budget (`massive\_mode`) guaranteeing deterministic **20.00 TPS**.|
 
 
 
@@ -198,27 +198,22 @@ Native WorldManager (Multiverse-Equivalent) \& Cancelable Chunk Queue
 
 
 
-Server-Side Long-Range Horizon Streaming (Up to 64 Chunks / 1,024 Blocks) \& Fast Population Pipeline
+Server-Side Long-Range Horizon Streaming (Up to 64 Chunks / 1,024 Blocks) \& 1.8-Adapted Parallel Stage-Graph Population Pipeline
 
 
 
+Decouple active simulation radius (`simulation\_distance`: 8–12 chunks running physics, redstone, entities, and `randomTicks`) from visual horizon streaming (`horizon\_view\_distance`: up to 64 chunks / 1,024-block radius).
 
 
+Outer Horizon Ring (`simulation\_distance + 1 ..= 64`): Stream distant terrain columns purely as cached, read-only, `libdeflate`-compressed `Arc<Bytes>` (`0x26` MapChunkBulk / `0x21` MapChunk) generated in parallel on background `rayon` workers, with zero entity tracking, zero random ticks, and zero simulation overhead on the 50 ms tick loop.
 
 
-Decouple active simulation radius (`simulation\\\_distance`: 8–12 chunks running physics, redstone, entities, and `randomTicks`) from visual horizon streaming (`horizon\\\_view\\\_distance`: up to 64 chunks / 1,024-block radius).
-
-
-
-
-
-Outer Horizon Ring (`simulation\\\_distance + 1 ..= 64`): Stream distant terrain columns purely as cached, read-only, `libdeflate`-compressed `Arc<Bytes>` (`0x26` MapChunkBulk / `0x21` MapChunk) generated in parallel on background `rayon` workers, with zero entity tracking, zero random ticks, and zero simulation overhead on the 50 ms tick loop.
-
-
-
-
-
-Fast Lock-Free Population Pipeline (`< 2 ms` per column): Eliminate synchronous `fsync` (`sync\\\_all()`) and JSON+Gzip disk serialization from the `Population` hot path (retaining compact binary records in RAM and flushing asynchronously on world save), size the raw neighborhood cache (`>= 2,048` columns with LRU eviction) to eliminate cascading `primer()` regenerations across the `4×4` neighborhood window (owner offsets from -1 through +2 on both axes), batch-generate missing primers in parallel with `rayon`, and maintain an `O(1)` cached `heightmap: \\\[u8; 256]` per `Raw` column so `skylight()` and surface queries avoid vertical `0..256` scans.
+1.8-Adapted Horizon-Style Parallel Stage-Graph & Fast Population Pipeline (`< 1.2 ms` per column):
+* **Two-Wave Lock-Free Execution (`rayon`):**
+  1. **Wave 1 (Parallel `primer` Batching):** Collect all missing `(x, z)` coordinates across the requested region plus its `4×4` neighbor halo (`-1..=+2` on both axes) and compute base terrain + carvers (`primer()`) in parallel across all cores with `rayon::par_iter()`.
+  2. **Wave 2 (4-Color Disjoint Checkerboard Population):** Because 1.8.9 `populate(cx, cz)` writes exclusively within the `32×32` block footprint `(cx..=cx+1, cz..=cz+1)` using a deterministic `JavaRandom` seeded solely by `(world_seed, cx, cz)`, partition pending population owners into **4 conflict-free parity buckets** `(cx & 1, cz & 1)` (`(0,0)`, `(1,0)`, `(0,1)`, `(1,1)`). Execute each bucket in parallel with `rayon` with zero overlapping writes, zero locks, and 100% bit-exact 1.8.9 determinism.
+* **Zero Hot-Path Disk Blocking & Compact Binary Journaling:** Keep population `Record` history in RAM during active generation (`0 ms` disk `fsync` in hot paths) and flush asynchronously via compact binary serialization (`bincode`/`rkyv`) on world save.
+* **Sized LRU Neighborhood Cache (`>= 2,048` columns) & `O(1)` Cached Heightmap:** Retain `>= 2,048` `Raw` columns with LRU eviction to prevent neighbor thrashing across `4×4` windows, and maintain an incrementally updated `heightmap: [u8; 256]` inside each `Raw` column so `skylight()`, `top_solid_or_liquid()`, and `height()` execute in `O(1)` without vertical `0..256` scans.
 
 
 
@@ -361,7 +356,7 @@ Test `?` for help and `w`/`msg` for tell. Teams use `scoreboard teams`. SyRust's
 
 The two official server artifacts identify the behavior under test. For this specification the dedicated command constructor was inspected in both, and the final biome grid was executed in each. The artifact SHA-1s are `5fafba3f58c40dc51b5c3ca72a98f62dfdae1db7` (1.8.8) and `b58b2ceb36e01bcd8dbf49c8fb66c55a9f0676cd` (1.8.9). The reproducible biome vector is in ROADMAP T2.4a. MCP mappings identify the obfuscated classes for inspection. [Mojang 1.8.8 metadata](https://piston-meta.mojang.com/v1/packages/690172f1227e1c1d2fa8fceadd0f578f7851a69e/1.8.8.json) · [Mojang 1.8.9 metadata](https://piston-meta.mojang.com/v1/packages/d546f1707a3f2b7d034eece5ea2e311eda875787/1.8.9.json) · [MCP 1.8.9 SRG mappings](https://maven.minecraftforge.net/de/oceanlabs/mcp/mcp/1.8.9/mcp-1.8.9-srg.zip) · [RetroMCP workflow](https://github.com/MCPHackers/RetroMCP-Java/tree/9ece383d9bfe993d763d75b503e913f0dfbd8852)
 
-Use cubiomes at `MC\\\_1\\\_8` for independent layer maps and structure candidates/biome viability. SeedFinding provides a second reading of the seed, biome and density algorithms. Its terrain constructor explicitly labels versions before 1.11 untested. Use official worlds for final block placement, decoration, light and NBT. [cubiomes layers](https://github.com/Cubitect/cubiomes/blob/e61f90580cbdd883214a8054670dacae655e59c0/generator.c) · [structure finders](https://github.com/Cubitect/cubiomes/blob/e61f90580cbdd883214a8054670dacae655e59c0/finders.h) · [SeedFinding terrain version check](https://github.com/SeedFinding/mc_terrain_java/blob/a03e440ec5b282e399382f2cc5ad0db91b438d2e/src/main/java/com/seedfinding/mcterrain/TerrainGenerator.java) · [biome layers](https://github.com/SeedFinding/mc_biome_java/tree/17af8cb1110fdc983b7cb2b887d1fb2060e23ee3) · [seed and random streams](https://github.com/SeedFinding/mc_seed_java/tree/55f6242001f7eb4226df4ed0d023f1838a54a99d) · [math](https://github.com/SeedFinding/mc_math_java/tree/851e9d0577dfdca50154e98f1d334bd31c641326)
+Use cubiomes at `MC\_1\_8` for independent layer maps and structure candidates/biome viability. SeedFinding provides a second reading of the seed, biome and density algorithms. Its terrain constructor explicitly labels versions before 1.11 untested. Use official worlds for final block placement, decoration, light and NBT. [cubiomes layers](https://github.com/Cubitect/cubiomes/blob/e61f90580cbdd883214a8054670dacae655e59c0/generator.c) · [structure finders](https://github.com/Cubitect/cubiomes/blob/e61f90580cbdd883214a8054670dacae655e59c0/finders.h) · [SeedFinding terrain version check](https://github.com/SeedFinding/mc_terrain_java/blob/a03e440ec5b282e399382f2cc5ad0db91b438d2e/src/main/java/com/seedfinding/mcterrain/TerrainGenerator.java) · [biome layers](https://github.com/SeedFinding/mc_biome_java/tree/17af8cb1110fdc983b7cb2b887d1fb2060e23ee3) · [seed and random streams](https://github.com/SeedFinding/mc_seed_java/tree/55f6242001f7eb4226df4ed0d023f1838a54a99d) · [math](https://github.com/SeedFinding/mc_math_java/tree/851e9d0577dfdca50154e98f1d334bd31c641326)
 
 
 
@@ -402,4 +397,3 @@ Expose a gRPC/HTTP control plane compatible with Agones / Nomad / Docker orchest
 
 
 Export lock-free atomic telemetry metrics (Prometheus/OpenTelemetry): 99th-percentile tick duration, packet batch compression ratio, chunk cache hit rate, and active ECS entity counts.
-

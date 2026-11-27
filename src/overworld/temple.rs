@@ -1,4 +1,7 @@
-use super::{JavaRandom, Overworld, StructureGrid};
+mod chests;
+pub(super) mod scattered;
+mod starts;
+use super::{Overworld, StructureGrid};
 use std::sync::OnceLock;
 
 pub(super) fn rectangles<const N: usize>(mut bytes: &'static [u8]) -> [&'static [u8]; N] {
@@ -53,14 +56,7 @@ impl Overworld {
                 ) {
                     continue;
                 }
-                let mut world = JavaRandom::new(self.seed);
-                let mut map = JavaRandom::new(
-                    self.seed
-                        ^ world.long().wrapping_mul(i64::from(sx))
-                        ^ world.long().wrapping_mul(i64::from(sz)),
-                );
-                map.bits(32);
-                let facing = ((map.bounded(4) + 2) % 4) as usize;
+                let facing = self.feature_facing(sx, sz, true) as usize;
                 let (ox, oz) = ((sx - cx) * 16, (sz - cz) * 16);
                 for z in oz.max(0)..=(oz + 20).min(15) {
                     for x in ox.max(0)..=(ox + 20).min(15) {
@@ -90,5 +86,55 @@ impl Overworld {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod scattered_start_tests {
+    use super::*;
+    use crate::anvil::structures::{Family, StructureFile};
+    use flate2::read::GzDecoder;
+    use std::io;
+
+    #[test]
+    fn official_structure_starts_survive_reopening() -> io::Result<()> {
+        // Dedicated server 1.8.9, seed 12345, MapGenStructureStart.writeStructureComponentsToNBT.
+        let generator = Overworld::new(12345);
+        let world = tempfile::tempdir()?;
+        let cases: [(Family, i32, i32, &[u8]); 4] = [
+            (
+                Family::Temple,
+                -191,
+                -493,
+                include_bytes!("../../FONTS EXTRAS/vectors/T2.4b-3/desert.nbt.gz"),
+            ),
+            (
+                Family::Temple,
+                111,
+                -211,
+                include_bytes!("../../FONTS EXTRAS/vectors/T2.4b-3/jungle.nbt.gz"),
+            ),
+            (
+                Family::Temple,
+                146,
+                -509,
+                include_bytes!("../../FONTS EXTRAS/vectors/T2.4b-3/hut.nbt.gz"),
+            ),
+            (
+                Family::Monument,
+                -249,
+                -508,
+                include_bytes!("../../FONTS EXTRAS/vectors/T2.4b-3/monument.nbt.gz"),
+            ),
+        ];
+        for (family, x, z, bytes) in cases {
+            let expected = fastnbt::from_reader(GzDecoder::new(bytes)).map_err(io::Error::other)?;
+            let mut index = StructureFile::load(world.path(), family)?;
+            generator.discover_features(family, (x, z), &mut index)?;
+            index.save(world.path())?;
+            let reopened = StructureFile::load(world.path(), family)?;
+            assert_eq!(reopened.get(x, z), Some(&expected));
+        }
+        Ok(())
     }
 }

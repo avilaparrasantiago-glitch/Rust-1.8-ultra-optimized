@@ -13,6 +13,8 @@ use std::{
 pub enum Family {
     Stronghold,
     Mineshaft,
+    Temple,
+    Monument,
 }
 
 impl Family {
@@ -20,6 +22,8 @@ impl Family {
         match self {
             Self::Stronghold => "Stronghold",
             Self::Mineshaft => "Mineshaft",
+            Self::Temple => "Temple",
+            Self::Monument => "Monument",
         }
     }
 }
@@ -110,6 +114,45 @@ impl StructureFile {
     pub fn insert(&mut self, start: Compound) -> io::Result<()> {
         self.features.insert(self.coordinates(&start)?, start);
         Ok(())
+    }
+
+    pub(crate) fn record_pyramid_chests(&mut self, placed: &[[i32; 3]]) -> io::Result<()> {
+        for &[x, z, flag] in placed {
+            let piece = self
+                .features
+                .get_mut(&(x, z))
+                .and_then(|start| start.get_mut("Children"));
+            let Some(Value::List(children)) = piece else {
+                return Err(invalid("missing pyramid"));
+            };
+            let Some(Value::Compound(child)) = children.first_mut() else {
+                return Err(invalid("missing pyramid piece"));
+            };
+            if !(0..4).contains(&flag)
+                || !matches!(child.get("id"),Some(Value::String(id)) if id=="TeDP")
+            {
+                return Err(invalid("invalid pyramid chest"));
+            }
+            child.insert(format!("hasPlacedChest{flag}"), Value::Byte(1));
+        }
+        Ok(())
+    }
+
+    /// Swamp huts fit inside their start chunk, including after rotation.
+    pub fn witch_spawn_at(&self, [x, y, z]: [i32; 3]) -> bool {
+        if self.family != Family::Temple {
+            return false;
+        }
+        let Some(Value::List(children)) = self.get(x >> 4, z >> 4).and_then(|s| s.get("Children"))
+        else {
+            return false;
+        };
+        children.iter().any(|child| {
+            let Value::Compound(fields)=child else {return false;};
+            matches!(fields.get("id"),Some(Value::String(id)) if id=="TeSH")
+                && matches!(fields.get("BB"),Some(Value::IntArray(b)) if b.len()==6
+                && (b[0]..=b[3]).contains(&x) && (b[1]..=b[4]).contains(&y) && (b[2]..=b[5]).contains(&z))
+        })
     }
 
     pub fn get(&self, x: i32, z: i32) -> Option<&Compound> {

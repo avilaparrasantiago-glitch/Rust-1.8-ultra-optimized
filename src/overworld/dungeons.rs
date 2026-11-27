@@ -70,9 +70,19 @@ pub(super) fn book(r: &mut JavaRandom) -> Value {
 
 fn chest(r: &mut JavaRandom, pos: Pos) -> Value {
     let enchantments = book(r);
+    fill_chest(r, pos, tables::LOOT, enchantments, 8)
+}
+
+pub(super) fn fill_chest(
+    r: &mut JavaRandom,
+    pos: Pos,
+    loot: &[(&str, i32, i32, i32)],
+    enchantments: Value,
+    rolls: i32,
+) -> Value {
     let mut slots = BTreeMap::new();
-    for _ in 0..8 {
-        let (id, min, max, _) = tables::LOOT[choose(r, tables::LOOT, |e| e.3)];
+    for _ in 0..rolls {
+        let (id, min, max, _) = loot[choose(r, loot, |e| e.3)];
         let count = min + r.bounded(max - min + 1);
         let slot = r.bounded(27) as i8;
         let mut item = HashMap::from([

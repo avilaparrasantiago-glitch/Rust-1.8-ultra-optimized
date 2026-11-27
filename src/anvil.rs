@@ -750,6 +750,63 @@ pub(crate) fn store_end_crystals(
     Ok(())
 }
 
+pub(crate) fn population_entities(col: &Column) -> io::Result<Vec<crate::entities::Entity>> {
+    use crate::entities::{Entity, EntityKind};
+    #[derive(serde::Deserialize)]
+    struct Root {
+        #[serde(rename = "Level")]
+        level: Level,
+    }
+    #[derive(serde::Deserialize)]
+    struct Level {
+        #[serde(rename = "Entities", default)]
+        entities: Vec<Saved>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Saved {
+        id: String,
+        #[serde(rename = "Pos")]
+        pos: [f64; 3],
+        #[serde(rename = "Profession", default)]
+        profession: i32,
+    }
+    if col.nbt.is_empty() {
+        return Ok(Vec::new());
+    }
+    let root: Root = fastnbt::from_bytes(&col.nbt).map_err(io::Error::other)?;
+    Ok(root
+        .level
+        .entities
+        .into_iter()
+        .filter_map(|e| {
+            let kind = match e.id.as_str() {
+                "Villager" => EntityKind::Villager {
+                    profession: e.profession,
+                },
+                name => EntityKind::Mob {
+                    kind: match name {
+                        "Pig" => 90,
+                        "Sheep" => 91,
+                        "Cow" => 92,
+                        "Chicken" => 93,
+                        "Wolf" => 95,
+                        "MushroomCow" => 96,
+                        "EntityHorse" => 100,
+                        "Rabbit" => 101,
+                        _ => return None,
+                    },
+                },
+            };
+            Some(Entity {
+                kind,
+                position: e.pos,
+                velocity: [0.; 3],
+                age: 0,
+            })
+        })
+        .collect())
+}
+
 pub(crate) fn load_end_crystals(
     template: &Template,
     entities: &mut crate::entities::EntityArena,

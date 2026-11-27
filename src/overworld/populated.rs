@@ -1,5 +1,6 @@
 use super::monument::MonumentChanges;
 use super::temple::scattered::{ScatteredChanges, structure_mob};
+use super::village::{PopulationDelta, populate_villages};
 use super::{
     JavaRandom, Overworld,
     column::pack,
@@ -83,6 +84,9 @@ fn index([x, y, z]: Pos) -> usize {
 }
 
 struct Raw {
+    // A conservative mask of sections containing a light source bright enough
+    // to suppress frost. Stale bits after removal only cause an extra search.
+    bright_sections: u16,
     states: Vec<u16>,
     biomes: [u8; 256],
     tiles: BTreeMap<usize, Value>,
@@ -135,6 +139,9 @@ impl Raw {
         self.solid_top[ray] = solid.unwrap_or(0);
     }
     fn write(&mut self, i: usize, state: u16) {
+        if emission(state >> 4) >= 10 {
+            self.bright_sections |= 1 << (i >> 12);
+        }
         let old = self.states[i] >> 4;
         self.states[i] = state;
         let new = state >> 4;
@@ -184,6 +191,8 @@ impl Changes {
 #[derive(Serialize, Deserialize)]
 struct Record {
     #[serde(skip)]
+    village: PopulationDelta,
+    #[serde(skip)]
     features_enabled: bool,
     #[serde(skip)]
     monument: MonumentChanges,
@@ -231,6 +240,9 @@ struct Neighbors<'a> {
     dirty: [Vec<u16>; 16],
     outside: Cell<bool>,
 }
+fn emission(id: u16) -> u8 {
+    super::climate::block_properties(id)[1]
+}
 impl<'a> Neighbors<'a> {
     fn new(raw: &'a mut HashMap<ColumnPos, Raw>, owner: ColumnPos) -> Self {
         let origin = (owner.0 - 1, owner.1 - 1);
@@ -261,6 +273,85 @@ impl<'a> Neighbors<'a> {
     fn get_mut(&mut self, pos: ColumnPos) -> Option<&mut Raw> {
         let slot = self.slot(pos)?;
         self.columns[slot].as_deref_mut()
+    }
+
+    // Only block light >= 10 affects snow and ice. An emitter can reach the
+    // target from at most five steps away, including across chunk boundaries.
+    fn warm_light(&self, pos: Pos) -> bool {
+        let [x, y, z] = pos;
+        let sections =
+            (u16::MAX << ((y - 5).max(0) >> 4)) & (u16::MAX >> (15 - ((y + 5).min(255) >> 4)));
+        if !((x - 5) >> 4..=(x + 5) >> 4).any(|cx| {
+            ((z - 5) >> 4..=(z + 5) >> 4).any(|cz| {
+                self.get((cx, cz))
+                    .is_some_and(|raw| raw.bright_sections & sections != 0)
+            })
+        }) {
+            return false;
+        }
+        let mut pending = vec![(pos, 10u8)];
+        let mut visited = HashMap::from([(pos, 10u8)]);
+        while let Some(([x, y, z], needed)) = pending.pop() {
+            let id = self.state([x, y, z]) >> 4;
+            if emission(id) >= needed {
+                return true;
+            }
+            let next = needed + super::climate::block_properties(id)[0].max(1);
+            if next > 15 {
+                continue;
+            }
+            for p in [
+                [x - 1, y, z],
+                [x + 1, y, z],
+                [x, y - 1, z],
+                [x, y + 1, z],
+                [x, y, z - 1],
+                [x, y, z + 1],
+            ] {
+                if (0..256).contains(&p[1]) && visited.get(&p).is_none_or(|&old| next < old) {
+                    visited.insert(p, next);
+                    pending.push((p, next));
+                }
+            }
+        }
+        false
+    }
+
+    fn surface_weather(&mut self, (cx, cz): ColumnPos) {
+        for x in cx * 16 + 8..cx * 16 + 24 {
+            for z in cz * 16 + 8..cz * 16 + 24 {
+                let Some(biome) = self.loaded_biome(x, z) else {
+                    continue;
+                };
+                let mut y = self.height(x, z);
+                while y > 0 {
+                    let block = [x, y - 1, z];
+                    if super::climate::block_properties(self.state(block)>>4)[2]&4!=0 {
+                        break;
+                    }
+                    y -= 1;
+                }
+                let below = [x, y - 1, z];
+                if self.can_freeze(below) {
+                    self.set_state(below, 79 << 4);
+                }
+                let pos = [x, y, z];
+                if y >= 256
+                    || self.state(pos) != 0
+                    || super::climate::temperature(biome, pos) > 0.15
+                {
+                    continue;
+                }
+                let support = self.state(below);
+                let holds_snow = match support >> 4 {
+                    78 => support & 7 == 7,
+                    id => super::climate::block_properties(id)[2]&1!=0,
+                };
+                if holds_snow && !self.warm_light(pos) {
+                    self.set_state(pos, 78 << 4);
+                }
+            }
+        }
     }
 }
 impl LakeWorld for Neighbors<'_> {
@@ -325,11 +416,9 @@ impl LakeWorld for Neighbors<'_> {
     fn can_freeze(&self, p: Pos) -> bool {
         matches!(self.state(p), 128 | 144)
             && self.get(column(p)).is_some_and(|c| {
-                matches!(
-                    c.biomes[index([p[0], 0, p[2]])],
-                    10..=13 | 26 | 30 | 31 | 140 | 158
-                )
+                super::climate::temperature(c.biomes[index([p[0], 0, p[2]])], p) <= 0.15
             })
+            && !self.warm_light(p)
     }
 }
 impl DungeonWorld for Neighbors<'_> {
@@ -426,6 +515,8 @@ impl BiomeWorld for Neighbors<'_> {
 /// Flush on the existing Anvil save worker. Failed snapshots keep all records
 /// queued for the next save. Each published batch is an atomic sequence.
 pub(crate) struct JournalWriter {
+    villages: StructureFile,
+    dirty_villages: bool,
     provider: Overworld,
     features: [(Family, StructureFile, bool); 2],
     holds: StructureFile,
@@ -448,7 +539,7 @@ impl JournalWriter {
         let mut tmp = tempfile::NamedTempFile::new_in(&self.dir)?;
         {
             let mut out = BufWriter::new(tmp.as_file_mut());
-            out.write_all(b"POP4")?;
+            out.write_all(b"POP5")?;
             bincode::serialize_into(&mut out, &(self.pending.len() as u64))
                 .map_err(io::Error::other)?;
             for rec in &self.pending {
@@ -460,6 +551,7 @@ impl JournalWriter {
                 bincode::serialize_into(&mut out, &rec.monument).map_err(io::Error::other)?;
                 bincode::serialize_into(&mut out, &rec.features_enabled)
                     .map_err(io::Error::other)?;
+                bincode::serialize_into(&mut out, &rec.village).map_err(io::Error::other)?;
             }
             out.flush()?;
         }
@@ -468,6 +560,8 @@ impl JournalWriter {
             .map_err(|e| e.error)?;
         self.saved += self.pending.len();
         for record in &self.pending {
+            record.village.apply(&mut self.villages)?;
+            self.dirty_villages |= !record.village.starts.is_empty();
             record.update_features(&self.provider, &mut self.features)?;
             record.mines.update(&mut self.mine_index)?;
             for raw in &record.holds {
@@ -481,6 +575,10 @@ impl JournalWriter {
         self.save_index()
     }
     fn save_index(&mut self) -> io::Result<()> {
+        if self.dirty_villages {
+            self.villages.save(&self.world_dir)?;
+            self.dirty_villages = false;
+        }
         for (_, file, dirty) in &mut self.features {
             if *dirty {
                 file.save(&self.world_dir)?;
@@ -502,6 +600,8 @@ impl JournalWriter {
 /// the biome generators' continuation state. A cached column can be evicted
 /// and reconstructed from its primer and the ordered records that touched it.
 pub(crate) struct Population {
+    villages: StructureFile,
+    population_mobs: BTreeMap<ColumnPos, Vec<Value>>,
     temples: StructureFile,
     monuments: StructureFile,
     structure_mobs: BTreeMap<ColumnPos, BTreeMap<Pos, Value>>,
@@ -531,6 +631,10 @@ impl Population {
         path: Option<&Path>,
         world: Option<&Path>,
     ) -> io::Result<Self> {
+        let villages = match world {
+            Some(root) => StructureFile::load(root, Family::Village)?,
+            None => StructureFile::empty(Family::Village),
+        };
         let mine_index = match world {
             Some(root) => StructureFile::load(root, Family::Mineshaft)?,
             None => StructureFile::empty(Family::Mineshaft),
@@ -552,6 +656,8 @@ impl Population {
             (
                 Some(tx),
                 Some(JournalWriter {
+                    villages: villages.clone(),
+                    dirty_villages: false,
                     provider: Overworld::new(seed),
                     features: [
                         (
@@ -582,6 +688,8 @@ impl Population {
         };
 
         let mut this = Self {
+            villages,
+            population_mobs: Default::default(),
             structure_mobs: BTreeMap::new(),
             monuments: match world {
                 Some(root) => StructureFile::load(root, Family::Monument)?,
@@ -629,6 +737,7 @@ impl Population {
                         && &magic != b"POP2"
                         && &magic != b"POP3"
                         && &magic != b"POP4"
+                        && &magic != b"POP5"
                     {
                         return Err(io::Error::other("invalid population journal header"));
                     }
@@ -644,11 +753,11 @@ impl Population {
                             record.mines =
                                 bincode::deserialize_from(&mut reader).map_err(io::Error::other)?;
                         }
-                        if &magic == b"POP3" || &magic == b"POP4" {
+                        if matches!(&magic, b"POP3" | b"POP4" | b"POP5") {
                             record.holds =
                                 bincode::deserialize_from(&mut reader).map_err(io::Error::other)?;
                         }
-                        if &magic == b"POP4" {
+                        if matches!(&magic, b"POP4" | b"POP5") {
                             record.pyramid_chests =
                                 bincode::deserialize_from(&mut reader).map_err(io::Error::other)?;
                             record.scattered =
@@ -656,6 +765,10 @@ impl Population {
                             record.monument =
                                 bincode::deserialize_from(&mut reader).map_err(io::Error::other)?;
                             record.features_enabled =
+                                bincode::deserialize_from(&mut reader).map_err(io::Error::other)?;
+                        }
+                        if &magic == b"POP5" {
+                            record.village =
                                 bincode::deserialize_from(&mut reader).map_err(io::Error::other)?;
                         }
                         this.remember(record)?;
@@ -672,6 +785,8 @@ impl Population {
                     record.update_features(&this.provider, &mut j.features)?;
                 }
                 j.saved = this.records.len();
+                j.villages = this.villages.clone();
+                j.dirty_villages = this.records.iter().any(|r| !r.village.starts.is_empty());
                 j.mine_index = this.mine_index.clone();
                 j.holds = this.holds.clone();
                 j.dirty_holds = this.records.iter().any(|r| !r.holds.is_empty());
@@ -702,6 +817,13 @@ impl Population {
                     .or_default()
                     .insert(pos, structure_mob(self.provider.seed, pos, elder)?);
             }
+        }
+        rec.village.apply(&mut self.villages)?;
+        for (pos, bytes) in &rec.village.mobs {
+            self.population_mobs
+                .entry(column(*pos))
+                .or_default()
+                .push(fastnbt::from_bytes(bytes).map_err(io::Error::other)?);
         }
         self.generators = rec.generators.clone();
         for raw in &rec.holds {
@@ -764,6 +886,16 @@ impl Population {
                 provider.primer(pos.0, pos.1)
             };
             let mut col = Raw {
+                bright_sections: states.as_chunks::<4096>().0.iter().enumerate().fold(
+                    0,
+                    |mask, (i, section)| {
+                        if section.iter().any(|s| emission(s >> 4) >= 10) {
+                            mask | (1 << i)
+                        } else {
+                            mask
+                        }
+                    },
+                ),
                 states,
                 biomes,
                 tiles: Default::default(),
@@ -853,23 +985,32 @@ impl Population {
         let mut world = Neighbors::new(&mut self.raw, pos);
         let mut generators = self.generators.clone();
         let mut mines = Ok(MineDelta::default());
+        let mut village = Ok(PopulationDelta::default());
         let mut holds = Ok(Vec::new());
-        self.provider
-            .populate(&mut world, [pos.0, pos.1], &mut generators, |world, rng| {
-                if self.provider.structures {
-                    mines = mines::place(&self.mine_index, self.provider.seed, pos, world, rng);
-                    holds = place_holds(&self.provider, &self.holds, self.ring, pos, world, rng);
-                    pyramid_chests = self.provider.pyramid_chests(&self.temples, pos, world, rng);
-                    scattered = self
-                        .provider
-                        .scattered_pieces(&self.temples, pos, world, rng);
-                    monument = self
-                        .provider
-                        .monument_pieces(&self.monuments, pos, world, rng);
-                }
-                false
-            });
+        let mut random =
+            self.provider
+                .populate(&mut world, [pos.0, pos.1], &mut generators, |world, rng| {
+                    if self.provider.structures {
+                        mines = mines::place(&self.mine_index, self.provider.seed, pos, world, rng);
+                        village =
+                            populate_villages(&self.provider, &self.villages, pos, world, rng);
+                        holds =
+                            place_holds(&self.provider, &self.holds, self.ring, pos, world, rng);
+                        pyramid_chests =
+                            self.provider.pyramid_chests(&self.temples, pos, world, rng);
+                        scattered = self
+                            .provider
+                            .scattered_pieces(&self.temples, pos, world, rng);
+                        monument = self
+                            .provider
+                            .monument_pieces(&self.monuments, pos, world, rng);
+                    }
+                    village.as_ref().is_ok_and(|v| v.generated)
+                });
         let result = (|| {
+            let mut village = village?;
+            village.spawn_animals(&world, self.provider.seed, pos, &mut random)?;
+            world.surface_weather(pos);
             if world.outside.get() {
                 return Err(io::Error::other("population exceeded loaded neighbors"));
             }
@@ -900,6 +1041,7 @@ impl Population {
                 columns.push((pos, changes));
             }
             let rec = Record {
+                village,
                 features_enabled: self.provider.structures,
                 scattered: scattered?,
                 monument: monument?,
@@ -1044,6 +1186,13 @@ impl Population {
                         .get(&pos)
                         .into_iter()
                         .flat_map(|m| m.values().cloned()),
+                )
+                .chain(
+                    self.population_mobs
+                        .get(&pos)
+                        .into_iter()
+                        .flatten()
+                        .cloned(),
                 )
                 .collect(),
         )?;
@@ -1525,10 +1674,103 @@ mod tests {
     }
 
     #[test]
+    fn winter_surface_crosses_chunks_and_observes_light() {
+        let mut raw = HashMap::new();
+        for x in -1..=2 {
+            for z in -1..=2 {
+                raw.insert(
+                    (x, z),
+                    Raw {
+                        bright_sections: 0,
+                        states: vec![0; 65536],
+                        biomes: [12; 256],
+                        tiles: Default::default(),
+                        ticks: Default::default(),
+                        last_used: 0,
+                        heightmap: [0; 256],
+                        solid_top: [0; 256],
+                        sky: Box::new([[0; 15]; 256]),
+                    },
+                );
+            }
+        }
+        let mut w = Neighbors::new(&mut raw, (0, 0));
+        for (x, z, id) in [
+            (8, 8, 9),
+            (15, 16, 2),
+            (16, 16, 18),
+            (22, 22, 2),
+            (23, 22, 50),
+            (7, 8, 2),
+        ] {
+            w.set_state([x, 64, z], id << 4);
+        }
+        w.surface_weather((0, 0));
+        assert_eq!(w.state([8, 64, 8]), 79 << 4);
+        assert_eq!(w.state([8, 65, 8]), 0);
+        assert_eq!(w.state([15, 65, 16]), 78 << 4);
+        assert_eq!(w.state([16, 65, 16]), 78 << 4);
+        assert_eq!(w.state([22, 65, 22]), 0);
+        assert_eq!(w.state([7, 65, 8]), 0);
+    }
+
+    #[test]
+    fn complete_village_reopens_without_spawning_twice() -> io::Result<()> {
+        let root = tempfile::tempdir()?;
+        let seed = 12345;
+        let (cx, cz) = (-128, 118);
+        let dir = root.path().join("journal");
+        let mut p = Population::open_with_world(seed, Some(&dir), Some(root.path()))?;
+        let start = p.provider.village_start_nbt(cx, cz).unwrap();
+        let Value::IntArray(b) = &start["BB"] else {
+            panic!("village bounds")
+        };
+        let mut owners = Vec::new();
+        for x in (b[0] - 8) >> 4..=(b[3] - 8) >> 4 {
+            for z in (b[2] - 8) >> 4..=(b[5] - 8) >> 4 {
+                p.populate_owner((x, z))?;
+                owners.push((x, z));
+            }
+        }
+        p.journal.as_mut().unwrap().flush()?;
+        assert!(owners.len() > 1);
+        let villagers = |p: &Population| {
+            p.population_mobs.values().flatten().filter(|v|matches!(v,Value::Compound(tag) if tag.get("id")==Some(&Value::String("Villager".into())))).count()
+        };
+        let count = villagers(&p);
+        assert!(count > 0);
+        let disk = StructureFile::load(root.path(), Family::Village)?;
+        let saved = disk.get(cx, cz).unwrap().clone();
+        assert_eq!(Some(&saved), p.villages.get(cx, cz));
+        let Value::List(pieces) = &saved["Children"] else {
+            panic!("village pieces")
+        };
+        for piece in pieces {
+            let Value::Compound(tag) = piece else {
+                panic!("compound")
+            };
+            if tag["id"] != Value::String("ViSR".into()) {
+                assert_ne!(tag["HPos"], Value::Int(-1));
+            }
+        }
+        drop(p);
+        let mut p = Population::open_with_world(seed, Some(&dir), Some(root.path()))?;
+        let records = p.records.len();
+        for owner in owners {
+            p.populate_owner(owner)?;
+        }
+        assert_eq!(records, p.records.len());
+        assert_eq!(villagers(&p), count);
+        assert_eq!(Some(&saved), p.villages.get(cx, cz));
+        Ok(())
+    }
+
+    #[test]
     fn cached_queries_follow_updates_and_column_limits() {
         let mut raw = HashMap::from([(
             (-1, -1),
             Raw {
+                bright_sections: 0,
                 states: vec![0; 65536],
                 biomes: [1; 256],
                 tiles: Default::default(),

@@ -165,7 +165,13 @@ class PlayTests(unittest.TestCase):
                 c.login("Alice")
                 c.confirm_pos()
                 c.chat("/give Alice 381 1")
-                c.until(0x2f, lambda b: len(b) >= 8 and struct.unpack_from(">h", b, 3)[0] == 381)
+                update = c.until(0x2f, lambda b: len(b) >= 8 and struct.unpack_from(">h", b, 3)[0] == 381)
+                slot = struct.unpack_from(">h", update, 1)[0]
+                # /give can put the eye in the main inventory. Equip it before use.
+                if slot != 36:
+                    for sequence, clicked in enumerate((slot, 36), 1):
+                        c.send(0x0e, struct.pack(">BhBhBh", 0, clicked, 0, sequence, 0, -1))
+                    c.until(0x2f, lambda b: b[1:5] == struct.pack(">hh", 36, 381))
                 c.send(0x08, bytes([255]) * 9 + struct.pack(">hbh", 381, 1, 0) + bytes(4))
                 spawn = c.until(0x0e, lambda b: b[number(b)[1]] == 72)
                 entity, offset = number(spawn)
@@ -311,7 +317,7 @@ class PlayTests(unittest.TestCase):
         bulk = a.until(0x26)
         cx, cz, mask = struct.unpack_from(">iiH", bulk, 2)
         self.assertEqual(hashlib.sha256(bulk).hexdigest(),
-                         "21088036155a9c0234758d596046a4e9285f6e8a9158b5a1b25e37785cdddb51")
+                         "eebadf890b8fdca729c903b57a8042ac5c9fcca57abc18cd8c7033cdb92f3366")
         self.assertEqual((cx, cz), (-16, 8))
         self.assertTrue(mask & (1 << (int(y - 1) >> 4)))
         blocks = 22  # sky flag, count, then two column headers
@@ -328,7 +334,7 @@ class PlayTests(unittest.TestCase):
                 offset += 8192
         self.assertEqual(offset - blocks, states_bytes)
         self.assertEqual(hashlib.sha256(states).hexdigest(),
-                         "276bc597ae102e564fe22739933f427b956148b1656b6edd4b9c61a7c5abcbaf")
+                         "cb5d1ddd5fca4f2bb1c470b576244c4ed89ef4080a206124bf23407d2bb85853")
         self.assertEqual(struct.unpack_from("<H", bulk, blocks)[0], 7 << 4)
 
         single = a.until(0x21)
@@ -341,7 +347,7 @@ class PlayTests(unittest.TestCase):
         a.confirm_pos()
         column = a.until(0x21, lambda p: struct.unpack_from(">ii", p) == (-7, 0) and any(p[9:11]))
         self.assertEqual(hashlib.sha256(column).hexdigest(),
-                         "62a8f15e12310e513f92ed8e2d0aa394e0b7abc529760501f5232ba1d556280a")
+                         "1770d7157e2976fb39a1f17d7d4f726bdacac560231e8244e93c71ae0b3287c3")
 
     def test_explore_edit_and_reopen(self):
         with tempfile.TemporaryDirectory() as world_dir:

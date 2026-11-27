@@ -11,6 +11,7 @@ use std::{
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Family {
+    Village,
     Stronghold,
     Mineshaft,
     Temple,
@@ -20,6 +21,7 @@ pub enum Family {
 impl Family {
     fn name(self) -> &'static str {
         match self {
+            Self::Village => "Village",
             Self::Stronghold => "Stronghold",
             Self::Mineshaft => "Mineshaft",
             Self::Temple => "Temple",

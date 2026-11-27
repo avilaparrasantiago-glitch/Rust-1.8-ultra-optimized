@@ -393,6 +393,15 @@ impl Manager {
             }
         });
         let mut entities = EntityArena::with_capacity(ENTITIES_PER_ROOM);
+        if population.is_some() {
+            for col in template.columns.values() {
+                for mob in crate::anvil::population_entities(col)? {
+                    if entities.insert(mob).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
         if dimension == 1 && revision == 2 {
             crate::anvil::load_end_crystals(&template, &mut entities)?;
         }
@@ -533,7 +542,7 @@ impl Room {
                 self.join(p, transfer);
             }
             if let Some(generation) = &mut self.generation {
-                generation.collect(&mut self.world.generated);
+                generation.collect(&mut self.world.generated, &mut self.entities);
             }
             if self.end_origin_pending
                 && [(0, 0), (1, 0), (0, 1), (1, 1)]
@@ -606,6 +615,7 @@ impl Room {
                     &self.players,
                     i32::from(self.mgr.cfg.view_distance),
                     &mut self.world.generated,
+                    &mut self.entities,
                 );
             }
             self.entities.tick();

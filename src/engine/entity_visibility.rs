@@ -77,7 +77,7 @@ fn spawn(id: i32, e: &Entity, pos: [i32; 3]) -> (Packet, Option<Packet>) {
         | EntityKind::Arrow
         | EntityKind::EndCrystal { .. }
         | EntityKind::EnderEye { .. } => 0x0e,
-        EntityKind::Mob { .. } => 0x0f,
+        EntityKind::Mob { .. } | EntityKind::Villager { .. } => 0x0f,
         EntityKind::Orb { .. } => 0x11,
     };
     let first = Packet::new(packet_id, |w| {
@@ -88,6 +88,7 @@ fn spawn(id: i32, e: &Entity, pos: [i32; 3]) -> (Packet, Option<Packet>) {
             EntityKind::EnderEye { .. } => w.put_u8(72),
             EntityKind::EndCrystal { .. } => w.put_u8(51),
             EntityKind::Mob { kind } => w.put_u8(kind),
+            EntityKind::Villager { .. } => w.put_u8(120),
             EntityKind::Orb { .. } => {}
         }
         for x in pos {
@@ -95,10 +96,14 @@ fn spawn(id: i32, e: &Entity, pos: [i32; 3]) -> (Packet, Option<Packet>) {
         }
         match e.kind {
             EntityKind::Orb { value } => w.put_i16(value.min(i16::MAX as u16) as i16),
-            EntityKind::Mob { .. } => {
+            EntityKind::Mob { .. } | EntityKind::Villager { .. } => {
                 w.extend_from_slice(&[0; 3]);
                 for v in e.velocity {
                     w.put_i16((v.clamp(-3.9, 3.9) * 8000.) as i16);
+                }
+                if let EntityKind::Villager { profession } = e.kind {
+                    w.put_u8((2 << 5) | 16);
+                    w.put_i32(profession);
                 }
                 w.put_u8(0x7f);
             }
@@ -169,7 +174,7 @@ pub(super) fn broadcast(
                         continue;
                     }
                     let height = match entity.kind {
-                        EntityKind::Mob { .. } => 2.,
+                        EntityKind::Mob { .. } | EntityKind::Villager { .. } => 2.,
                         EntityKind::Arrow => 0.5,
                         _ => 0.25,
                     };

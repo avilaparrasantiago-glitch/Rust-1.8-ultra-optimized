@@ -2,6 +2,8 @@
 
 mod biomes;
 mod carvers;
+mod climate;
+mod village;
 pub mod decoration;
 pub mod dungeons;
 pub mod lakes;
@@ -37,6 +39,26 @@ mod reference_layout {
         }
         assert_eq!(actual_children.len(), expected_children.len());
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn official_village_layout() {
+        for (seed, x, z, bytes) in [
+            (
+                12345,
+                -128,
+                118,
+                &include_bytes!("../FONTS EXTRAS/vectors/T2.4b-4/village-12345--128-118.nbt.gz")[..],
+            ),
+            (
+                -9581,
+                -127,
+                114,
+                include_bytes!("../FONTS EXTRAS/vectors/T2.4b-4/village--9581--127-114.nbt.gz"),
+            ),
+        ] {
+            compare(Overworld::new(seed).village_start_nbt(x, z).unwrap(), bytes);
+        }
     }
 
     #[test]

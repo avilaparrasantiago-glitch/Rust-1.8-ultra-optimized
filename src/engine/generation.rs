@@ -1,4 +1,5 @@
 use super::Player;
+use crate::entities::{Entity,EntityArena,EntityId};
 use crate::metrics::Metrics;
 use crate::{
     arena::{Column, ColumnPos, Template, column},
@@ -17,11 +18,13 @@ use std::{
 
 const CAPACITY: usize = 32;
 const IDLE_COLUMNS: usize = 32;
+type GeneratedColumn = (Column, Vec<Entity>);
 
 pub(super) struct Generation {
     thread: std::thread::JoinHandle<()>,
     jobs: Sender<(ColumnPos, Arc<AtomicBool>)>,
-    ready: Receiver<(ColumnPos, Option<Column>)>,
+    ready: Receiver<(ColumnPos, Option<GeneratedColumn>)>,
+    mobs: HashMap<ColumnPos, Vec<EntityId>>,
     tokens: Vec<Arc<AtomicBool>>,
     pending: HashMap<ColumnPos, Arc<AtomicBool>>,
 }
@@ -103,7 +106,20 @@ impl Generation {
                                     Ordering::Relaxed,
                                 );
                                 metrics.generated_columns.fetch_add(1, Ordering::Relaxed);
-                                Some(col)
+                                let mobs = if population.is_some() {
+                                    match crate::anvil::population_entities(&col) {
+                                        Ok(mobs) => mobs,
+                                        Err(error) => {
+                                            eprintln!(
+                                                "Invalid generated entities at {pos:?}: {error}"
+                                            );
+                                            return None;
+                                        }
+                                    }
+                                } else {
+                                    Vec::new()
+                                };
+                                Some((col, mobs))
                             })
                             .flatten();
                         if tx.send((pos, col)).is_err() {
@@ -117,6 +133,7 @@ impl Generation {
             thread,
             jobs,
             ready,
+            mobs: HashMap::new(),
             pending: HashMap::with_capacity(CAPACITY),
             tokens: (0..CAPACITY)
                 .map(|_| Arc::new(AtomicBool::new(false)))
@@ -150,12 +167,20 @@ impl Generation {
         }
     }
 
-    pub(super) fn collect(&mut self, cache: &mut Template) {
+    pub(super) fn collect(&mut self, cache: &mut Template, entities: &mut EntityArena) {
         for (pos, col) in self.ready.try_iter() {
             if let Some(token) = self.pending.remove(&pos) {
                 if token.load(Ordering::Acquire)
-                    && let Some(col) = col
+                    && let Some((col, mobs)) = col
                 {
+                    if !mobs.is_empty() && !cache.columns.contains_key(&pos) {
+                        self.mobs.insert(
+                            pos,
+                            mobs.into_iter()
+                                .filter_map(|e| entities.insert(e).ok())
+                                .collect(),
+                        );
+                    }
                     cache.columns.insert(pos, col);
                 }
                 self.tokens.push(token);
@@ -163,7 +188,13 @@ impl Generation {
         }
     }
 
-    pub(super) fn trim(&self, players: &[Player], radius: i32, cache: &mut Template) {
+    pub(super) fn trim(
+        &mut self,
+        players: &[Player],
+        radius: i32,
+        cache: &mut Template,
+        entities: &mut EntityArena,
+    ) {
         let visible = |&(x, z): &ColumnPos| {
             players.iter().any(|p| {
                 let (cx, cz) = column(p.pos);
@@ -178,6 +209,15 @@ impl Generation {
         let limit = players.len() * (2 * radius as usize + 1).pow(2) + IDLE_COLUMNS;
         if cache.columns.len() > limit {
             cache.columns.retain(|pos, _| visible(pos));
+            self.mobs.retain(|pos, ids| {
+                if cache.contains(*pos) {
+                    return true;
+                }
+                for &id in ids.iter() {
+                    entities.remove(id);
+                }
+                false
+            });
         }
     }
 }
@@ -214,18 +254,19 @@ mod tests {
             Arc::default(),
         )
         .unwrap();
+        let mut entities = EntityArena::with_capacity(32);
         let mut first = Template::flat(0);
         let mut second = Template::flat(0);
         hell.request(pos);
         hell.request(pos);
         end.request(pos);
         assert_eq!(hell.pending.len(), 1);
-        hell.trim(&[], 1, &mut first);
+        hell.trim(&[], 1, &mut first, &mut entities);
         let until = Instant::now() + std::time::Duration::from_secs(10);
         while !hell.pending.is_empty() || !end.pending.is_empty() {
             assert!(Instant::now() < until);
-            hell.collect(&mut first);
-            end.collect(&mut second);
+            hell.collect(&mut first, &mut entities);
+            end.collect(&mut second, &mut entities);
             std::thread::yield_now();
         }
         assert!(!first.contains(pos));
@@ -233,19 +274,19 @@ mod tests {
         hell.request(pos);
         while !first.contains(pos) {
             assert!(Instant::now() < until);
-            hell.collect(&mut first);
+            hell.collect(&mut first, &mut entities);
             std::thread::yield_now();
         }
         assert_eq!(first.columns[&pos].biomes, [8; 256]);
         let before_eviction = first.columns[&pos].packet(pos);
         first.columns.extend(Template::flat(3).columns);
-        hell.trim(&[], 1, &mut first);
+        hell.trim(&[], 1, &mut first, &mut entities);
         assert!(first.columns.is_empty());
         hell.request(pos);
         let until = Instant::now() + std::time::Duration::from_secs(10);
         while !first.contains(pos) {
             assert!(Instant::now() < until);
-            hell.collect(&mut first);
+            hell.collect(&mut first, &mut entities);
             std::thread::yield_now();
         }
         assert_eq!(
@@ -257,17 +298,18 @@ mod tests {
     #[test]
     fn abandoned_work_is_bounded_discarded_and_retryable() {
         let mut queue = Generation::new(9581, false, 2, None, None, Arc::default()).unwrap();
+        let mut entities = EntityArena::with_capacity(32);
         let mut cache = Template::flat(3);
         for x in 0..64 {
             queue.request((x, 9));
         }
         assert_eq!(queue.pending.len(), CAPACITY);
-        queue.trim(&[], 1, &mut cache);
+        queue.trim(&[], 1, &mut cache, &mut entities);
         assert!(cache.columns.is_empty());
         let deadline = Instant::now() + std::time::Duration::from_secs(5);
         while !queue.pending.is_empty() {
             assert!(Instant::now() < deadline);
-            queue.collect(&mut cache);
+            queue.collect(&mut cache, &mut entities);
             std::thread::yield_now();
         }
         assert!(cache.columns.is_empty());
@@ -275,7 +317,7 @@ mod tests {
         queue.request((0, 9));
         while !cache.contains((0, 9)) {
             assert!(Instant::now() < deadline);
-            queue.collect(&mut cache);
+            queue.collect(&mut cache, &mut entities);
             std::thread::yield_now();
         }
         assert!(cache.cached((0, 9)));

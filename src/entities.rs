@@ -24,6 +24,7 @@ pub enum EntityKind {
     Arrow,
     EndCrystal { yaw: u8 },
     Mob { kind: u8 },
+    Villager { profession: i32 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

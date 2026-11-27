@@ -42,7 +42,7 @@ struct Piece {
     variant: i32,
     door: i32,
 }
-fn oriented(at: [i32; 3], dir: i32, shape: Bounds) -> Bounds {
+pub(super) fn oriented(at: [i32; 3], dir: i32, shape: Bounds) -> Bounds {
     let [x, y, z] = at;
     let [dx, dy, dz, w, h, l] = shape;
     match dir {

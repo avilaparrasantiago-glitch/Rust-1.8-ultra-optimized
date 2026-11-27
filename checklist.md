@@ -18,7 +18,8 @@
 - [x] T2.2 · Enviar columnas contiguas en un paquete MapChunkBulk.
 - [x] T2.3 · Filtrar entidades por campo de visión y oclusión, y ajustar la frecuencia de envío según la distancia.
 - [x] T2.4a · Reproducir biomas, relieve, superficie y punto de aparición del Overworld DEFAULT.
-- [ ] T2.4b · Completar y contrastar el tallado, las piezas de estructuras y la población por bioma del Overworld (incluyendo tubería paralela de 2 olas en `populated.rs`: sin `fsync`/JSON en caliente, caché `>= 2.048` LRU, `rayon` en batch para `primer()`, decoración paralela 4-way `(cx & 1, cz & 1)` y `heightmap` `O(1)`).
+- [x] T2.4b · Tallado, piezas de estructuras y población por bioma del Overworld. Aldeas, animales, hielo y nieve verificados el 27 de noviembre de 2026.
+- [ ] T2.4b-1b · Completar la decoración paralela en cuatro grupos y verificar el objetivo de latencia de generación.
 - [x] T2.4c · Entregar terreno al explorar, conservar mundos y ediciones al reabrir y medir el coste de exploración.
 - [x] T2.4d · Generar terreno, cuevas, fortalezas y decoración del Nether, y conservar cofres y generadores al reabrir.
 - [x] T2.4e · Generar la isla, los pilares, los cristales, la plataforma de llegada y la aparición inicial del dragón en el End.

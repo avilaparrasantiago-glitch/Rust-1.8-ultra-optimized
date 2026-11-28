@@ -363,11 +363,11 @@ mod tests {
         let mut provider = Overworld::new(12345);
         provider.structures = false;
         let fixture: Value =
-            fastnbt::from_bytes(include_bytes!("dungeons/dungeon-neighbors.nbt")).unwrap();
+            fastnbt::from_bytes(include_bytes!("../../FONTS EXTRAS/vectors/T2.4b-1/dungeon-neighbors.nbt")).unwrap();
         let mut states = Vec::new();
         if decorate {
             use std::io::Read;
-            flate2::read::GzDecoder::new(&include_bytes!("dungeons/population-neighbors.gz")[..])
+            flate2::read::GzDecoder::new(&include_bytes!("../../FONTS EXTRAS/vectors/T2.4b-1/population-neighbors.gz")[..])
                 .read_to_end(&mut states)
                 .unwrap();
             assert_eq!(states.len(), 4 * 16 * 16 * 256 * 2);
@@ -442,13 +442,13 @@ mod tests {
                 0,
                 0x1df0d107736814a4,
                 -3608267860102554860,
-                include_bytes!("dungeons/dungeon-0.nbt").as_slice(),
+                include_bytes!("../../FONTS EXTRAS/vectors/T2.4b-1/dungeon-0.nbt").as_slice(),
             ),
             (
                 4,
                 0x9ce0e339969352a1,
                 8051490743109180124,
-                include_bytes!("dungeons/dungeon-4.nbt").as_slice(),
+                include_bytes!("../../FONTS EXTRAS/vectors/T2.4b-1/dungeon-4.nbt").as_slice(),
             ),
         ] {
             let mut r = JavaRandom::new(seed);

@@ -24,7 +24,7 @@ fn official_stronghold_starts() {
 fn official_biome_surfaces() {
     let g = Overworld::new(12345);
     let mut differences = Vec::new();
-    for line in include_str!("fixtures/overworld-12345.txt")
+    for line in include_str!("../FONTS EXTRAS/vectors/T2.4a/overworld-12345.txt")
         .lines()
         .filter(|s| !s.starts_with('#'))
     {

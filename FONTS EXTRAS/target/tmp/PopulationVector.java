@@ -1,5 +1,9 @@
 import java.util.*;
 public class PopulationVector extends TerrainReference.DesertWorld {
+    static java.io.File neighborsFile() {
+        java.io.File vector = new java.io.File("vectors/T2.4b-1/dungeon-neighbors.nbt");
+        return vector.isFile() ? vector : new java.io.File("FONTS EXTRAS", vector.getPath());
+    }
     final Map<Long,akw> tiles=new HashMap<>();
     PopulationVector()throws Exception{super(12345);}
     public akw s(cj p) {
@@ -37,7 +41,7 @@ public class PopulationVector extends TerrainReference.DesertWorld {
                 alz s=p(new cj(x0*16+x,y,z0*16+z));afh block=s.c();
                 int packed=(afh.a(block)<<4)|block.c(s); bytes.write(packed);bytes.write(packed>>8);h=(h^((afh.a(block)<<4)|block.c(s)))*0x100000001b3L;
             }
-        try {java.nio.file.Files.write(java.nio.file.Paths.get("target/tmp/java-pop.bin"),bytes.toByteArray());}catch(Exception e){throw new RuntimeException(e);}java.util.List<akw> sorted=new ArrayList<>(tiles.values());sorted.sort(Comparator.comparingInt((akw t)->t.v().n()).thenComparingInt(t->t.v().o()).thenComparingInt(t->t.v().p()));du entries=new du();for(akw tile:sorted){dn tag=new dn();tile.b(tag);entries.a(tag);}dn root=new dn();root.a("TileEntities",entries);try(java.io.DataInputStream input=new java.io.DataInputStream(new java.io.FileInputStream("src/overworld/dungeons/dungeon-neighbors.nbt"))){if(!root.equals(dx.a(input)))throw new AssertionError(root.toString());}catch(java.io.IOException e){throw new RuntimeException(e);}System.out.printf("%d %016x %d %d%n",biome.az,h,r.nextLong(),tiles.size());
+        try {java.nio.file.Files.write(java.nio.file.Paths.get("target/tmp/java-pop.bin"),bytes.toByteArray());}catch(Exception e){throw new RuntimeException(e);}java.util.List<akw> sorted=new ArrayList<>(tiles.values());sorted.sort(Comparator.comparingInt((akw t)->t.v().n()).thenComparingInt(t->t.v().o()).thenComparingInt(t->t.v().p()));du entries=new du();for(akw tile:sorted){dn tag=new dn();tile.b(tag);entries.a(tag);}dn root=new dn();root.a("TileEntities",entries);try(java.io.DataInputStream input=new java.io.DataInputStream(new java.io.FileInputStream(neighborsFile()))){if(!root.equals(dx.a(input)))throw new AssertionError(root.toString());}catch(java.io.IOException e){throw new RuntimeException(e);}System.out.printf("%d %016x %d %d%n",biome.az,h,r.nextLong(),tiles.size());
     }
     public static void main(String[] args)throws Exception{kb.c();new PopulationVector().run(-2,-3);}
 }

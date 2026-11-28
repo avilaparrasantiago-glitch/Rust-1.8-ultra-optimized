@@ -180,7 +180,7 @@ fn desert_well(w: &mut impl BiomeWorld, [x, mut y, z]: Pos) {
     }
 }
 
-#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DecoratorState {
     // BiomeGenBase owns and reuses these generator instances.
     oak_heights: std::collections::BTreeMap<u8, i32>,

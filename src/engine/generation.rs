@@ -18,15 +18,19 @@ use std::{
 
 const CAPACITY: usize = 32;
 const IDLE_COLUMNS: usize = 32;
-type GeneratedColumn = (Column, Vec<Entity>);
+enum GeneratedColumn {
+    Active(Box<Column>, Vec<Entity>),
+    Horizon(crate::wire::Packet),
+}
 
 pub(super) struct Generation {
     thread: std::thread::JoinHandle<()>,
-    jobs: Sender<(ColumnPos, Arc<AtomicBool>)>,
+    jobs: Sender<(ColumnPos, Arc<AtomicBool>, bool)>,
     ready: Receiver<(ColumnPos, Option<GeneratedColumn>)>,
     mobs: HashMap<ColumnPos, Vec<EntityId>>,
     tokens: Vec<Arc<AtomicBool>>,
     pending: HashMap<ColumnPos, Arc<AtomicBool>>,
+    distant: std::collections::HashSet<ColumnPos>,
 }
 
 impl Generation {
@@ -38,7 +42,7 @@ impl Generation {
         mut population: Option<crate::overworld::populated::Population>,
         metrics: Arc<Metrics>,
     ) -> io::Result<Self> {
-        let (jobs, rx) = bounded::<(ColumnPos, Arc<AtomicBool>)>(CAPACITY);
+        let (jobs, rx) = bounded::<(ColumnPos, Arc<AtomicBool>, bool)>(CAPACITY);
         let (tx, ready) = bounded(CAPACITY);
         let thread = std::thread::Builder::new()
             .name("overworld-generator".into())
@@ -62,8 +66,8 @@ impl Generation {
                         positions.extend(
                             batch
                                 .iter()
-                                .filter(|(_, wanted)| wanted.load(Ordering::Acquire))
-                                .map(|(pos, _)| *pos),
+                                .filter(|(_, wanted, _)| wanted.load(Ordering::Acquire))
+                                .map(|(pos, _, _)| *pos),
                         );
                         let start = Instant::now();
                         match generator.columns(&positions) {
@@ -75,7 +79,7 @@ impl Generation {
                             .fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
                         positions.clear();
                     }
-                    for (pos, wanted) in batch.drain(..) {
+                    for (pos, wanted, distant) in batch.drain(..) {
                         let col = wanted
                             .load(Ordering::Acquire)
                             .then(|| {
@@ -100,12 +104,21 @@ impl Generation {
                                         None => generator.column(pos.0, pos.1),
                                     }
                                 };
-                                col.packet(pos);
+                                let packet = col.packet(pos);
+                                for threshold in [256, 512] {
+                                    if let Err(error) = packet.encoded(threshold) {
+                                        eprintln!("Cannot encode column {pos:?}: {error}");
+                                        return None;
+                                    }
+                                }
                                 metrics.generation_ns.fetch_add(
                                     start.elapsed().as_nanos() as u64,
                                     Ordering::Relaxed,
                                 );
                                 metrics.generated_columns.fetch_add(1, Ordering::Relaxed);
+                                if distant {
+                                    return Some(GeneratedColumn::Horizon(packet));
+                                }
                                 let mobs = if population.is_some() {
                                     match crate::anvil::population_entities(&col) {
                                         Ok(mobs) => mobs,
@@ -119,7 +132,7 @@ impl Generation {
                                 } else {
                                     Vec::new()
                                 };
-                                Some((col, mobs))
+                                Some(GeneratedColumn::Active(Box::new(col), mobs))
                             })
                             .flatten();
                         if tx.send((pos, col)).is_err() {
@@ -135,6 +148,7 @@ impl Generation {
             ready,
             mobs: HashMap::new(),
             pending: HashMap::with_capacity(CAPACITY),
+            distant: std::collections::HashSet::with_capacity(CAPACITY),
             tokens: (0..CAPACITY)
                 .map(|_| Arc::new(AtomicBool::new(false)))
                 .collect(),
@@ -153,6 +167,21 @@ impl Generation {
     }
 
     pub(super) fn request(&mut self, pos: ColumnPos) {
+        self.distant.remove(&pos);
+        self.enqueue(pos, false);
+    }
+
+    pub(super) fn request_distant(&mut self, pos: ColumnPos) {
+        // Reserve half of the worker slots for active terrain.
+        if self.pending.len() < CAPACITY / 2 && !self.pending.contains_key(&pos) {
+            self.enqueue(pos, true);
+            if self.pending.contains_key(&pos) {
+                self.distant.insert(pos);
+            }
+        }
+    }
+
+    fn enqueue(&mut self, pos: ColumnPos, distant: bool) {
         if self.pending.len() >= CAPACITY || self.pending.contains_key(&pos) {
             return;
         }
@@ -160,19 +189,42 @@ impl Generation {
             return;
         };
         wanted.store(true, Ordering::Release);
-        if self.jobs.try_send((pos, wanted.clone())).is_ok() {
+        if self.jobs.try_send((pos, wanted.clone(), distant)).is_ok() {
             self.pending.insert(pos, wanted);
         } else {
             self.tokens.push(wanted);
         }
     }
 
-    pub(super) fn collect(&mut self, cache: &mut Template, entities: &mut EntityArena) {
-        for (pos, col) in self.ready.try_iter() {
+    #[cfg(test)]
+    fn collect(&mut self, cache: &mut Template, entities: &mut EntityArena) {
+        self.collect_ready(cache, entities, None);
+    }
+
+    pub(super) fn collect_ready(
+        &mut self,
+        cache: &mut Template,
+        entities: &mut EntityArena,
+        mut horizon: Option<&mut super::horizon::Horizon>,
+    ) {
+        while let Ok((pos, col)) = self.ready.try_recv() {
+            let distant = self.distant.remove(&pos);
             if let Some(token) = self.pending.remove(&pos) {
-                if token.load(Ordering::Acquire)
-                    && let Some((col, mobs)) = col
-                {
+                let wanted = token.load(Ordering::Acquire);
+                self.tokens.push(token);
+                if wanted && let Some(result) = col {
+                    let (col, mobs) = match result {
+                        GeneratedColumn::Active(col, mobs) => (*col, mobs),
+                        GeneratedColumn::Horizon(packet) => {
+                            if let Some(h) = horizon.as_deref_mut() {
+                                h.insert(pos, packet);
+                            }
+                            if !distant {
+                                self.request(pos);
+                            }
+                            continue;
+                        }
+                    };
                     if !mobs.is_empty() && !cache.columns.contains_key(&pos) {
                         self.mobs.insert(
                             pos,
@@ -183,15 +235,25 @@ impl Generation {
                     }
                     cache.columns.insert(pos, col);
                 }
-                self.tokens.push(token);
             }
         }
     }
 
-    pub(super) fn trim(
+    #[cfg(test)]
+    fn trim(
         &mut self,
         players: &[Player],
         radius: i32,
+        cache: &mut Template,
+        entities: &mut EntityArena,
+    ) {
+        self.trim_view(players, radius, radius as u8, cache, entities);
+    }
+    pub(super) fn trim_view(
+        &mut self,
+        players: &[Player],
+        radius: i32,
+        horizon_radius: u8,
         cache: &mut Template,
         entities: &mut EntityArena,
     ) {
@@ -202,12 +264,16 @@ impl Generation {
             })
         };
         for (pos, token) in &self.pending {
-            if !visible(pos) {
+            let far_visible = self.distant.contains(pos)
+                && players
+                    .iter()
+                    .any(|p| super::horizon::in_range(*pos, column(p.pos), horizon_radius));
+            if !far_visible && !visible(pos) {
                 token.store(false, Ordering::Release);
             }
         }
         let limit = players.len() * (2 * radius as usize + 1).pow(2) + IDLE_COLUMNS;
-        if cache.columns.len() > limit {
+        if horizon_radius > radius as u8 || cache.columns.len() > limit {
             cache.columns.retain(|pos, _| visible(pos));
             self.mobs.retain(|pos, ids| {
                 if cache.contains(*pos) {
@@ -225,6 +291,47 @@ impl Generation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn distant_generation_stays_out_of_simulation_and_cancels() -> io::Result<()> {
+        use crate::config::WorldDistances;
+        let pos = (64, 0);
+        let mut cache = Template::flat(0);
+        let mut horizon = super::super::horizon::Horizon::new(
+            Arc::new(Template::flat(0)),
+            WorldDistances {
+                simulation_distance: 8,
+                horizon_view_distance: 64,
+            },
+        )?;
+        let mut queue = Generation::new(12345, true, 1, None, None, Arc::default())?;
+        let mut entities = EntityArena::with_capacity(32);
+        let drain = |queue: &mut Generation,
+                     entities: &mut EntityArena,
+                     cache: &mut Template,
+                     horizon: &mut super::super::horizon::Horizon| {
+            let until = Instant::now() + std::time::Duration::from_secs(10);
+            while !queue.pending.is_empty() {
+                assert!(Instant::now() < until);
+                queue.collect_ready(cache, entities, Some(horizon));
+                std::thread::yield_now();
+            }
+        };
+        queue.request_distant(pos);
+        drain(&mut queue, &mut entities, &mut cache, &mut horizon);
+        assert!(horizon.get(pos).is_some());
+        assert!(!cache.contains(pos));
+        queue.request_distant((63, 0));
+        queue.trim_view(&[], 8, 64, &mut cache, &mut entities);
+        drain(&mut queue, &mut entities, &mut cache, &mut horizon);
+        assert!(horizon.get((63, 0)).is_none());
+        queue.request_distant(pos);
+        queue.request(pos);
+        drain(&mut queue, &mut entities, &mut cache, &mut horizon);
+        assert!(cache.contains(pos));
+        queue.finish();
+        Ok(())
+    }
 
     #[test]
     fn returning_to_same_coordinates_cannot_publish_other_dimensions_work() {

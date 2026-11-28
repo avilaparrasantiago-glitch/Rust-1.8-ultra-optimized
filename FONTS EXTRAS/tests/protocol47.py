@@ -157,6 +157,44 @@ def server(*, started=None, **overrides):
 
 
 class PlayTests(unittest.TestCase):
+    def test_read_only_horizon_at_1024_blocks(self):
+        # A sparse arena puts a real column at the visual limit and another
+        # just outside. Use a raw Zstandard block for a self-contained fixture.
+        positions = [(0, 0), (63, 0), (64, 0), (65, 0)]
+        payload = bytearray(b"CORAL47\x01" + struct.pack(">I", len(positions)))
+        for x, z in positions:
+            payload += struct.pack(">iiBBHHB", x, z, 1, 0, 1, 16, 0)
+            payload += bytes([1]) * 256 + bytes(4)
+        frame = (bytes.fromhex("28b52ffda0") + struct.pack("<I", len(payload))
+                 + (len(payload) * 8 + 1).to_bytes(3, "little") + payload)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "horizon.car")
+            path.write_bytes(frame)
+            with server(arena_file=str(path), worlds=["lobby"], world_distances={
+                    "lobby": {"simulation_distance": 8, "horizon_view_distance": 64}
+            }) as (port, _):
+                client = self.client(port)
+                client.login("Alice")
+                client.confirm_pos()
+                seen = set()
+                until = time.monotonic() + 10
+                while not {(63, 0), (64, 0)} <= seen:
+                    self.assertLess(time.monotonic(), until)
+                    kind, body = client.read()
+                    if kind == 0:
+                        client.send(0, body)
+                    elif kind == 0x21:
+                        seen.add(struct.unpack_from(">ii", body))
+                    elif kind == 0x26:
+                        count, offset = number(body, 1)
+                        seen.update(struct.unpack_from(">ii", body, offset + 10 * i)
+                                    for i in range(count))
+                self.assertNotIn((65, 0), seen)
+                client.chat("/tp Alice 1040.5 32 0.5")
+                client.confirm_pos()
+                client.until(0x21, lambda p: struct.unpack_from(">ii", p) == (0, 0)
+                             and p[9:11] == bytes(2))
+
     def test_eye_of_ender_launch(self):
         with tempfile.TemporaryDirectory() as directory:
             Path(directory, "seed").write_text("12345")

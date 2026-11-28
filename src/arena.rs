@@ -120,33 +120,32 @@ impl Column {
     fn payload_len(&self) -> usize {
         self.sections.len() * (10240 + usize::from(self.skylight) * 2048) + 256
     }
-    pub(crate) fn packet(&self, (x, z): ColumnPos) -> Packet {
-        self.packet
-            .get_or_init(|| {
-                let payload_len = self.payload_len();
-                Packet::with_capacity(0x21, payload_len + 15, |w| {
-                    w.put_i32(x);
-                    w.put_i32(z);
-                    w.put_u8(1);
-                    let mask = self.sections.keys().fold(0u16, |m, y| m | (1 << *y));
-                    w.put_u16(mask);
-                    w.var(payload_len as i32);
-                    for s in self.sections.values() {
-                        s.write_states(w);
+    pub(crate) fn packet(&self, pos: ColumnPos) -> Packet {
+        self.packet.get_or_init(|| self.build_packet(pos)).clone()
+    }
+    pub(crate) fn build_packet(&self, (x, z): ColumnPos) -> Packet {
+        let payload_len = self.payload_len();
+        Packet::with_capacity(0x21, payload_len + 15, |w| {
+            w.put_i32(x);
+            w.put_i32(z);
+            w.put_u8(1);
+            let mask = self.sections.keys().fold(0u16, |m, y| m | (1 << *y));
+            w.put_u16(mask);
+            w.var(payload_len as i32);
+            for s in self.sections.values() {
+                s.write_states(w);
+            }
+            for plane in 0..1 + usize::from(self.skylight) {
+                for s in self.sections.values() {
+                    if let Some(light) = &s.light {
+                        w.extend_from_slice(&light[plane]);
+                    } else {
+                        w.resize(w.len() + 2048, if plane == 0 { 0 } else { 255 });
                     }
-                    for plane in 0..1 + usize::from(self.skylight) {
-                        for s in self.sections.values() {
-                            if let Some(light) = &s.light {
-                                w.extend_from_slice(&light[plane]);
-                            } else {
-                                w.resize(w.len() + 2048, if plane == 0 { 0 } else { 255 });
-                            }
-                        }
-                    }
-                    w.extend_from_slice(&self.biomes);
-                })
-            })
-            .clone()
+                }
+            }
+            w.extend_from_slice(&self.biomes);
+        })
     }
 }
 

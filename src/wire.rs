@@ -225,7 +225,7 @@ impl Packet {
     pub fn encoded(&self, threshold: usize) -> io::Result<Bytes> {
         let idx = match threshold {
             256 => 0,
-            512 => 1,
+            512 => usize::from((256..512).contains(&self.body().len())),
             _ => return Err(invalid("unknown compression profile")),
         };
         // All packet constructors enforce bounds. Cache successes and errors without racing compression.
@@ -236,5 +236,21 @@ impl Packet {
         } else {
             Ok(b.clone())
         }
+    }
+}
+
+#[cfg(test)]
+mod packet_cache_tests {
+    use super::*;
+
+    #[test]
+    fn chunk_profiles_share_the_same_compressed_allocation() -> io::Result<()> {
+        let packet = Packet::new(0x21, |w| w.resize(1024, 0));
+        let low = packet.encoded(256)?;
+        let high = packet.encoded(512)?;
+        assert_eq!(low.as_ptr(), high.as_ptr());
+        let medium = Packet::new(0x21, |w| w.resize(300, 1));
+        assert_ne!(medium.encoded(256)?, medium.encoded(512)?);
+        Ok(())
     }
 }

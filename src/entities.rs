@@ -166,7 +166,13 @@ impl EntityArena {
     }
 
     pub fn tick(&mut self) {
+        self.tick_active(|_| true);
+    }
+    pub fn tick_active(&mut self, active: impl Fn([f64; 3]) -> bool) {
         self.retain(|_, entity| {
+            if !active(entity.position) {
+                return true;
+            }
             for (position, velocity) in entity.position.iter_mut().zip(entity.velocity) {
                 *position += velocity;
             }

@@ -209,6 +209,16 @@ struct Record {
     columns: Vec<(ColumnPos, Changes)>,
 }
 impl Record {
+    fn changes_inputs(&self, generators: &DecoratorState) -> bool {
+        self.generators != *generators
+            || !self.village.starts.is_empty()
+            || !self.mines.starts.is_empty()
+            || !self.scattered.starts.is_empty()
+            || !self.monument.starts.is_empty()
+            || !self.pyramid_chests.is_empty()
+            || !self.holds.is_empty()
+    }
+
     fn update_features(
         &self,
         provider: &Overworld,
@@ -234,10 +244,39 @@ impl Record {
         Ok(())
     }
 }
+#[derive(Default)]
+struct DirtyBlocks {
+    sections: [Option<Box<[u64; 64]>>; 16],
+    count: usize,
+}
+
+impl DirtyBlocks {
+    fn mark(&mut self, offset: usize) {
+        let section = self.sections[offset >> 12].get_or_insert_with(|| Box::new([0; 64]));
+        let word = &mut section[(offset >> 6) & 63];
+        let bit = 1 << (offset & 63);
+        self.count += usize::from(*word & bit == 0);
+        *word |= bit;
+    }
+
+    fn offsets(&self) -> impl Iterator<Item = u16> + '_ {
+        self.sections.iter().enumerate().filter_map(|(y, s)| Some((y, s.as_deref()?)))
+            .flat_map(|(y, section)| section.iter().copied().enumerate().flat_map(move |(word, mut bits)| {
+                let base = (y * 4096 + word * 64) as u16;
+                std::iter::from_fn(move || {
+                    if bits == 0 { return None; }
+                    let offset = base + bits.trailing_zeros() as u16;
+                    bits &= bits - 1;
+                    Some(offset)
+                })
+            }))
+    }
+}
+
 struct Neighbors<'a> {
     origin: ColumnPos,
     columns: [Option<&'a mut Raw>; 16],
-    dirty: [Vec<u16>; 16],
+    dirty: [DirtyBlocks; 16],
     outside: Cell<bool>,
 }
 fn emission(id: u16) -> u8 {
@@ -386,7 +425,7 @@ impl LakeWorld for Neighbors<'_> {
                 c.tiles.remove(&i);
                 c.ticks.remove(&i);
             }
-            self.dirty[slot].push(i as u16);
+            self.dirty[slot].mark(i);
             c.write(i, s);
         }
     }
@@ -434,7 +473,7 @@ impl DungeonWorld for Neighbors<'_> {
             && let Some(c) = self.columns[slot].as_deref_mut()
         {
             c.tiles.insert(index(p), nbt);
-            self.dirty[slot].push(index(p) as u16);
+            self.dirty[slot].mark(index(p));
         }
     }
 }
@@ -469,7 +508,7 @@ impl DecorationWorld for Neighbors<'_> {
             // Stone, its variants, and all DEFAULT ore replacements are opaque
             // solid blocks with neither tile entities nor scheduled fluid ticks.
             c.states[i] = ore;
-            self.dirty[slot].push(i as u16);
+            self.dirty[slot].mark(i);
         }
     }
 
@@ -972,17 +1011,44 @@ impl Population {
             .flat_map(|x| (pos.1 - 1..=pos.1 + 2).map(move |z| (x, z)))
             .collect();
         self.prepare(&positions)?;
-        self.decorate_owner(pos)
+        self.decorate_owner(pos).map(|_| ())
     }
-    fn decorate_owner(&mut self, pos: ColumnPos) -> io::Result<()> {
+    fn decorate_owner(&mut self, pos: ColumnPos) -> io::Result<bool> {
+        let discovered = self.discover(pos)?;
+        let mut world = std::mem::take(&mut self.raw);
+        let result = self.build_record(pos, &mut world, &self.monuments, &self.temples);
+        self.raw = world;
+        if result.is_err() {
+            self.raw.clear();
+            self.recency.clear();
+        }
+        let rec = result?;
+        let changed = discovered || rec.changes_inputs(&self.generators);
+        self.commit_record(rec)?;
+        Ok(changed)
+    }
+
+    fn discover(&mut self, pos: ColumnPos) -> io::Result<bool> {
+        let monument =
+            self.provider
+                .discover_features(Family::Monument, pos, &mut self.monuments)?;
+        let temple = self
+            .provider
+            .discover_features(Family::Temple, pos, &mut self.temples)?;
+        Ok(monument || temple)
+    }
+
+    fn build_record(
+        &self,
+        pos: ColumnPos,
+        raw: &mut HashMap<ColumnPos, Raw>,
+        monuments: &StructureFile,
+        temples: &StructureFile,
+    ) -> io::Result<Record> {
         let mut monument = Ok(MonumentChanges::default());
-        self.provider
-            .discover_features(Family::Monument, pos, &mut self.monuments)?;
         let mut scattered = Ok(ScatteredChanges::default());
         let mut pyramid_chests = Vec::new();
-        self.provider
-            .discover_features(Family::Temple, pos, &mut self.temples)?;
-        let mut world = Neighbors::new(&mut self.raw, pos);
+        let mut world = Neighbors::new(raw, pos);
         let mut generators = self.generators.clone();
         let mut mines = Ok(MineDelta::default());
         let mut village = Ok(PopulationDelta::default());
@@ -996,76 +1062,166 @@ impl Population {
                             populate_villages(&self.provider, &self.villages, pos, world, rng);
                         holds =
                             place_holds(&self.provider, &self.holds, self.ring, pos, world, rng);
-                        pyramid_chests =
-                            self.provider.pyramid_chests(&self.temples, pos, world, rng);
-                        scattered = self
-                            .provider
-                            .scattered_pieces(&self.temples, pos, world, rng);
-                        monument = self
-                            .provider
-                            .monument_pieces(&self.monuments, pos, world, rng);
+                        pyramid_chests = self.provider.pyramid_chests(temples, pos, world, rng);
+                        scattered = self.provider.scattered_pieces(temples, pos, world, rng);
+                        monument = self.provider.monument_pieces(monuments, pos, world, rng);
                     }
                     village.as_ref().is_ok_and(|v| v.generated)
                 });
-        let result = (|| {
-            let mut village = village?;
-            village.spawn_animals(&world, self.provider.seed, pos, &mut random)?;
-            world.surface_weather(pos);
-            if world.outside.get() {
-                return Err(io::Error::other("population exceeded loaded neighbors"));
-            }
-            let mut columns = Vec::new();
-            for (slot, mut blocks) in world.dirty.into_iter().enumerate() {
-                if blocks.is_empty() {
-                    continue;
-                }
-                let pos = (
-                    world.origin.0 + (slot / 4) as i32,
-                    world.origin.1 + (slot % 4) as i32,
-                );
-                let c = world.columns[slot].as_deref().unwrap();
-                blocks.sort_unstable();
-                blocks.dedup();
-                let mut changes = Changes::default();
-                for i in blocks {
-                    changes.blocks.push((i, c.states[usize::from(i)]));
-                    if let Some(tile) = c.tiles.get(&usize::from(i)) {
-                        changes
-                            .tiles
-                            .push((i, fastnbt::to_bytes(tile).map_err(io::Error::other)?));
-                    }
-                    if let Some(&(fluid, delay)) = c.ticks.get(&usize::from(i)) {
-                        changes.ticks.push((i, fluid, delay));
-                    }
-                }
-                columns.push((pos, changes));
-            }
-            let rec = Record {
-                village,
-                features_enabled: self.provider.structures,
-                scattered: scattered?,
-                monument: monument?,
-                pyramid_chests,
-                holds: holds?,
-                mines: mines?,
-                owner: pos,
-                generators,
-                columns,
-            };
-            Ok(rec)
-        })();
-        if result.is_err() {
-            self.raw.clear();
-            self.recency.clear();
+        let mut village = village?;
+        village.spawn_animals(&world, self.provider.seed, pos, &mut random)?;
+        world.surface_weather(pos);
+        if world.outside.get() {
+            return Err(io::Error::other("population exceeded loaded neighbors"));
         }
-        self.remember(result?)?;
+        let mut columns = Vec::new();
+        for (slot, blocks) in world.dirty.into_iter().enumerate() {
+            if blocks.count == 0 {
+                continue;
+            }
+            let pos = (
+                world.origin.0 + (slot / 4) as i32,
+                world.origin.1 + (slot % 4) as i32,
+            );
+            let c = world.columns[slot]
+                .as_deref()
+                .ok_or_else(|| io::Error::other("missing dirty column"))?;
+            let mut changes = Changes { blocks: Vec::with_capacity(blocks.count), ..Default::default() };
+            for i in blocks.offsets() {
+                changes.blocks.push((i, c.states[usize::from(i)]));
+                if let Some(tile) = c.tiles.get(&usize::from(i)) {
+                    changes
+                        .tiles
+                        .push((i, fastnbt::to_bytes(tile).map_err(io::Error::other)?));
+                }
+                if let Some(&(fluid, delay)) = c.ticks.get(&usize::from(i)) {
+                    changes.ticks.push((i, fluid, delay));
+                }
+            }
+            columns.push((pos, changes));
+        }
+        let rec = Record {
+            village,
+            features_enabled: self.provider.structures,
+            scattered: scattered?,
+            monument: monument?,
+            pyramid_chests,
+            holds: holds?,
+            mines: mines?,
+            owner: pos,
+            generators,
+            columns,
+        };
+        Ok(rec)
+    }
+
+    fn commit_record(&mut self, record: Record) -> io::Result<()> {
+        self.remember(record)?;
         if let Some(tx) = &self.journal_tx {
-            tx.send(self.records.last().unwrap().clone())
-                .map_err(io::Error::other)?;
+            let record = self
+                .records
+                .last()
+                .ok_or_else(|| io::Error::other("missing population record"))?;
+            tx.send(record.clone()).map_err(io::Error::other)?;
+        }
+        Ok(())
+    }
+
+    fn decorate_batch(&mut self, owners: &[ColumnPos]) -> io::Result<()> {
+        fn halo((x, z): ColumnPos) -> impl Iterator<Item = ColumnPos> {
+            (x - 1..=x + 2).flat_map(move |cx| (z - 1..=z + 2).map(move |cz| (cx, cz)))
+        }
+        // An owner is ready when every earlier reader or writer of any of
+        // its 16 columns has committed. Later disjoint owners may then run
+        // ahead without changing what an earlier owner sees.
+        let mut last = HashMap::new();
+        let dependencies: Vec<_> = owners
+            .iter()
+            .enumerate()
+            .map(|(i, &pos)| {
+                halo(pos)
+                    .map(|p| last.insert(p, i + 1).unwrap_or(0))
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
+        let width = rayon::current_num_threads().min(4);
+        let mut staged = BTreeMap::<usize, (usize, io::Result<Record>)>::new();
+        let mut revision = 0;
+        for (i, &pos) in owners.iter().enumerate() {
+            if !staged.contains_key(&i) && width > 1 {
+                let ready: Vec<_> = (i..owners.len())
+                    .filter(|j| dependencies[*j] <= i && !staged.contains_key(j))
+                    .take(width)
+                    .collect();
+                if ready.len() > 1 {
+                    let mut jobs = Vec::with_capacity(ready.len());
+                    for j in ready {
+                        let mut local = HashMap::with_capacity(16);
+                        for p in halo(owners[j]) {
+                            let col = self.raw.remove(&p).ok_or_else(|| {
+                                io::Error::other("missing disjoint population column")
+                            })?;
+                            local.insert(p, col);
+                        }
+                        jobs.push((j, local));
+                    }
+                    let done: Vec<_> = jobs
+                        .into_par_iter()
+                        .map(|(j, mut local)| {
+                            let owner = owners[j];
+                            let rec = (|| {
+                                let mut monuments = self.monuments.clone();
+                                let mut temples = self.temples.clone();
+                                self.provider.discover_features(
+                                    Family::Monument,
+                                    owner,
+                                    &mut monuments,
+                                )?;
+                                self.provider.discover_features(
+                                    Family::Temple,
+                                    owner,
+                                    &mut temples,
+                                )?;
+                                self.build_record(owner, &mut local, &monuments, &temples)
+                            })();
+                            (j, local, rec)
+                        })
+                        .collect();
+                    for (j, local, rec) in done {
+                        self.raw.extend(local);
+                        staged.insert(j, (revision, rec));
+                    }
+                }
+            }
+            let changed = match staged.remove(&i) {
+                Some((version, result)) if version == revision => {
+                    let rec = result?;
+                    let changed = self.discover(pos)? || rec.changes_inputs(&self.generators);
+                    self.commit_record(rec)?;
+                    changed
+                }
+                Some(_) => {
+                    // Restore the authoritative primer and journal before retrying
+                    // with updated structure indexes or biome-generator state.
+                    let positions: Vec<_> = halo(pos).collect();
+                    let build = Self::primer_builder(self.provider.clone(), &positions);
+                    for p in positions {
+                        let mut raw = build(p);
+                        raw.last_used = self.raw[&p].last_used;
+                        self.insert_raw(p, raw)?;
+                    }
+                    self.decorate_owner(pos)?
+                }
+                None => self.decorate_owner(pos)?,
+            };
+            revision += usize::from(changed);
         }
         Ok(())
     }
     pub(crate) fn columns(&mut self, positions: &[ColumnPos]) -> io::Result<Vec<Column>> {
+        #[cfg(test)]
+        let start = std::time::Instant::now();
         let mut owners = Vec::new();
         let mut seen = HashSet::new();
         let mut required = Vec::new();
@@ -1101,43 +1257,50 @@ impl Population {
             .copied()
             .filter(|p| !self.raw.contains_key(p))
             .collect();
-        let (tx, rx) = crossbeam_channel::unbounded();
-        let build = Self::primer_builder(self.provider.clone(), &missing);
-        if missing.len() == 1 {
-            self.insert_raw(missing[0], build(missing[0]))?;
-        } else if rayon::current_thread_index().is_some() {
-            // A caller inside a saturated Rayon pool must participate in the
-            // fork/join work instead of blocking a worker on the receiver.
-            let generated: Vec<_> = missing.into_par_iter().map(|p| (p, build(p))).collect();
-            for (p, raw) in generated {
-                self.insert_raw(p, raw)?;
-            }
-        } else if !missing.is_empty() {
-            rayon::spawn(move || {
-                missing.into_iter().par_bridge().for_each_with(tx, |tx, p| {
-                    let _ = tx.send((p, build(p)));
-                });
+        // Pin the entire working set before inserting new primers. Evict only
+        // nonparticipants, so replay and decoration always see a full halo.
+        let mut excess = (self.raw.len() + missing.len()).saturating_sub(RAW_CACHE_CAPACITY);
+        if excess > 0 {
+            self.recency.retain(|&(_, pos)| {
+                if excess > 0 && !wanted.contains(&pos) {
+                    self.raw.remove(&pos);
+                    excess -= 1;
+                    return false;
+                }
+                true
             });
         }
-        for (cx, cz) in owners {
-            for x in cx - 1..=cx + 2 {
-                for z in cz - 1..=cz + 2 {
-                    while !self.raw.contains_key(&(x, z)) {
-                        let (p, raw) = rx.recv().map_err(io::Error::other)?;
-                        self.insert_raw(p, raw)?;
-                    }
-                }
-            }
-            self.decorate_owner((cx, cz))?;
-        }
-        for p in &required {
-            while !self.raw.contains_key(p) {
-                let (p, raw) = rx.recv().map_err(io::Error::other)?;
-                self.insert_raw(p, raw)?;
-            }
+        let build = Self::primer_builder(self.provider.clone(), &missing);
+        let generated: Vec<_> = missing.par_iter().map(|&p| (p, build(p))).collect();
+        for (p, raw) in generated {
+            self.insert_raw(p, raw)?;
+            self.recency.insert((0, p));
         }
         self.touch(&required);
-        positions.par_iter().map(|&p| self.pack_column(p)).collect()
+        #[cfg(test)]
+        let primers_done = std::time::Instant::now();
+        if let Err(error) = self.decorate_batch(&owners) {
+            // Drop uncommitted speculative writes. The next request replays
+            // only records that completed in reference order.
+            self.raw.clear();
+            self.recency.clear();
+            return Err(error);
+        }
+        #[cfg(test)]
+        let decorated = std::time::Instant::now();
+        let result = positions.par_iter().map(|&p| self.pack_column(p)).collect();
+        #[cfg(test)]
+        if std::env::var_os("SYRUST_POPULATION_TIMING").is_some() {
+            println!(
+                "Cold batch: {} primers, {} owners. Primer {:?}, decoration {:?}, packing {:?}",
+                missing.len(),
+                owners.len(),
+                primers_done - start,
+                decorated - primers_done,
+                decorated.elapsed()
+            );
+        }
+        result
     }
     pub(crate) fn column(&mut self, pos: ColumnPos) -> io::Result<Column> {
         Ok(self.columns(&[pos])?.pop().unwrap())
@@ -1657,6 +1820,68 @@ mod tests {
             samples[60].as_secs_f64() * 1000.,
             samples[63].as_secs_f64() * 1000.
         );
+        Ok(())
+    }
+
+    #[test]
+    fn disjoint_population_windows_match_sequential_records() -> io::Result<()> {
+        let owners = [(-5, 0), (4, 0), (5, 0)];
+        let positions: Vec<_> = owners
+            .iter()
+            .copied()
+            .flat_map(|(x, z)| {
+                (x - 1..=x + 2).flat_map(move |cx| (z - 1..=z + 2).map(move |cz| (cx, cz)))
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let mut serial = Population::open(12345, None)?;
+        let mut parallel = Population::open(12345, None)?;
+        serial.prepare(&positions)?;
+        parallel.prepare(&positions)?;
+        for owner in owners {
+            serial.decorate_owner(owner)?;
+        }
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .map_err(io::Error::other)?
+            .install(|| parallel.decorate_batch(&owners))?;
+        for p in positions {
+            let expected = &serial.raw[&p];
+            let actual = &parallel.raw[&p];
+            assert!(expected.states == actual.states, "block states at {p:?}");
+            assert_eq!(expected.heightmap, actual.heightmap);
+            assert_eq!(expected.sky, actual.sky);
+            assert_eq!(expected.tiles, actual.tiles);
+            assert_eq!(expected.ticks, actual.ticks);
+        }
+        assert!(parallel.generators == serial.generators);
+        Ok(())
+    }
+
+    #[test]
+    fn batched_population_preserves_order_dependent_ore_and_light() -> io::Result<()> {
+        let positions: Vec<_> = (-2..=1)
+            .flat_map(|x| (-2..=1).map(move |z| (x, z)))
+            .collect();
+        let mut reference = Population::open(4862413858852300341, None)?;
+        let mut candidate = Population::open(4862413858852300341, None)?;
+        for &pos in &positions {
+            reference.populate_owner(pos)?;
+        }
+        candidate.columns(&[(0, 0)])?;
+        // Grouping these owners by parity replaces this iron ore with stone.
+        assert_eq!(
+            candidate.raw[&(-2, -1)].states[index([-24, 1, -5])],
+            15 << 4
+        );
+        for (pos, expected) in &reference.raw {
+            let actual = &candidate.raw[pos];
+            assert!(actual.states == expected.states, "block states at {pos:?}");
+            assert_eq!(actual.heightmap, expected.heightmap);
+            assert_eq!(actual.sky, expected.sky);
+        }
         Ok(())
     }
 

@@ -19,11 +19,11 @@
 - [x] T2.3 · Filtrar entidades por campo de visión y oclusión, y ajustar la frecuencia de envío según la distancia.
 - [x] T2.4a · Reproducir biomas, relieve, superficie y punto de aparición del Overworld DEFAULT.
 - [x] T2.4b · Tallado, piezas de estructuras y población por bioma del Overworld. Aldeas, animales, hielo y nieve verificados el 27 de noviembre de 2026.
-- [ ] T2.4b-1b · Completar la decoración paralela en cuatro grupos y verificar el objetivo de latencia de generación.
+- [ ] T2.4b-1b · Planificador paralelo por dependencias y paridad verificados. Pendiente alcanzar < 1,2 ms/col (mediana medida 3,058 ms/col).
 - [x] T2.4c · Entregar terreno al explorar, conservar mundos y ediciones al reabrir y medir el coste de exploración.
 - [x] T2.4d · Generar terreno, cuevas, fortalezas y decoración del Nether, y conservar cofres y generadores al reabrir.
 - [x] T2.4e · Generar la isla, los pilares, los cristales, la plataforma de llegada y la aparición inicial del dragón en el End.
-- [ ] T2.4f · Desacoplar el radio de simulación activa (8–12 chunks) del streaming de horizonte lejano del lado del servidor (hasta 64 chunks / 1.024 bloques de radio) mediante anillo de solo lectura cacheado en `Arc<Bytes>`.
+- [ ] T2.4f · Radios desacoplados y entrega TCP hasta 64 chunks verificados. Pendiente medir asignaciones y carga sostenida con un horizonte denso.
 
 ## Fase 3 · Ejecución por núcleo y sala elástica progresiva
 

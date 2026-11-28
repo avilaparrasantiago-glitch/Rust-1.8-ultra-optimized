@@ -1,6 +1,7 @@
 mod drops;
 mod entity_visibility;
 mod generation;
+mod horizon;
 mod windows;
 use crate::{
     arena::{BlockPos, ColumnPos, Template, World, column},
@@ -67,6 +68,10 @@ pub struct Player {
     credit: u32,
     loaded: HashSet<ColumnPos>,
     pending_cols: Vec<ColumnPos>,
+    far_loaded: HashSet<ColumnPos>,
+    far_pending: Vec<ColumnPos>,
+    far_unload: Vec<ColumnPos>,
+    far_overlay: Option<(ColumnPos, Option<BlockPos>)>,
     center: Option<ColumnPos>,
     seen: HashMap<i32, u64>,
     seen_entities: entity_visibility::Seen,
@@ -114,6 +119,10 @@ impl Player {
             credit: 200,
             loaded: HashSet::new(),
             pending_cols: Vec::new(),
+            far_loaded: HashSet::new(),
+            far_pending: Vec::new(),
+            far_unload: Vec::new(),
+            far_overlay: None,
             center: None,
             seen: HashMap::new(),
             seen_entities: entity_visibility::empty_seen(),
@@ -420,6 +429,10 @@ impl Manager {
                 )
             })
             .transpose()?;
+        let distances = self.cfg.distances(name);
+        let horizon = (distances.horizon_view_distance > distances.simulation_distance)
+            .then(|| horizon::Horizon::new(template.clone(), distances))
+            .transpose()?;
         let mut world = World::new(name.into(), template);
         world.edits = edits;
         let strongholds = if normal && !legacy && dimension == 0 && live_eyes.is_some() {
@@ -448,6 +461,8 @@ impl Manager {
                     core_affinity::set_for_current(cores[index % cores.len()]);
                 }
                 Room {
+                    distances,
+                    horizon,
                     strongholds,
                     dimension,
                     end_origin_pending: normal && dimension == 1,
@@ -502,6 +517,8 @@ impl Manager {
 type EyeLocations = ([(i32, i32); 3], Arc<std::sync::RwLock<Vec<[i32; 3]>>>);
 
 pub struct Room {
+    distances: crate::config::WorldDistances,
+    horizon: Option<horizon::Horizon>,
     strongholds: Option<EyeLocations>,
     dimension: i32,
     end_origin_pending: bool,
@@ -542,7 +559,11 @@ impl Room {
                 self.join(p, transfer);
             }
             if let Some(generation) = &mut self.generation {
-                generation.collect(&mut self.world.generated, &mut self.entities);
+                generation.collect_ready(
+                    &mut self.world.generated,
+                    &mut self.entities,
+                    self.horizon.as_mut(),
+                );
             }
             if self.end_origin_pending
                 && [(0, 0), (1, 0), (0, 1), (1, 1)]
@@ -608,29 +629,56 @@ impl Room {
                     continue;
                 }
                 self.advance(i);
+                self.advance_horizon(i);
                 i += 1;
             }
             if let Some(generation) = &mut self.generation {
-                generation.trim(
+                generation.trim_view(
                     &self.players,
-                    i32::from(self.mgr.cfg.view_distance),
+                    i32::from(self.distances.simulation_distance),
+                    self.distances.horizon_view_distance,
                     &mut self.world.generated,
                     &mut self.entities,
                 );
             }
-            self.entities.tick();
+            if let Some(horizon) = &mut self.horizon {
+                horizon.maintain(&self.players, self.distances.horizon_view_distance);
+            }
+            let players = &self.players;
+            let radius = self.distances.simulation_distance;
+            let bounded = self.mgr.cfg.world_distances.contains_key(&self.world.name);
+            let active = |pos| {
+                !bounded
+                    || players
+                        .iter()
+                        .any(|p| horizon::in_range(pos, column(p.pos), radius))
+            };
+            self.entities.tick_active(|pos| active(column(pos)));
             drops::collect_drops(&mut self.entities, &mut self.players);
+            let players = &self.players;
+            let active = |pos| {
+                !bounded
+                    || players
+                        .iter()
+                        .any(|p| horizon::in_range(pos, column(p.pos), radius))
+            };
             self.circuit
-                .step(&mut self.world, self.tick, &mut self.changed);
+                .step_active(&mut self.world, self.tick, &mut self.changed, |p| {
+                    active((p.0 >> 4, p.2 >> 4))
+                });
             for &(pos, state) in &self.changed {
                 let pkt = p::block(pos, state);
                 for p in &self.players {
-                    if p.loaded.contains(&(pos.0 >> 4, pos.2 >> 4)) {
+                    let col = (pos.0 >> 4, pos.2 >> 4);
+                    if p.loaded.contains(&col) || p.far_loaded.contains(&col) {
                         p.send(pkt.clone());
                     }
                 }
             }
             for (&pos, f) in &mut self.furnaces {
+                if !active((pos.0 >> 4, pos.2 >> 4)) {
+                    continue;
+                }
                 let changed = f.tick();
                 for p in &self.players {
                     if p.window == Some(Window::Furnace(pos)) {
@@ -716,6 +764,16 @@ impl Room {
             ));
         }
         player.loaded.clear();
+        player.far_loaded.clear();
+        player.far_overlay = None;
+        player.far_pending.clear();
+        player.far_unload.clear();
+        if self.horizon.is_some() {
+            let footprint = (2 * usize::from(self.distances.horizon_view_distance) + 1).pow(2);
+            player.far_loaded.reserve(footprint);
+            player.far_pending.reserve(footprint);
+            player.far_unload.reserve(footprint);
+        }
         player.pending_cols.clear();
         player.seen.clear();
         player.seen_entities.clear();
@@ -827,7 +885,7 @@ impl Room {
         let col = (pos.0 >> 4, pos.2 >> 4);
         let packet = p::block(pos, state);
         for peer in &self.players {
-            if peer.loaded.contains(&col) {
+            if peer.loaded.contains(&col) || peer.far_loaded.contains(&col) {
                 peer.send(packet.clone());
             }
         }
@@ -857,7 +915,7 @@ impl Room {
                 }
             });
             for a in &self.players {
-                if a.loaded.contains(&(cx, cz)) {
+                if a.loaded.contains(&(cx, cz)) || a.far_loaded.contains(&(cx, cz)) {
                     a.send(packet.clone());
                 }
             }
@@ -897,7 +955,7 @@ impl Room {
             player.send(p::health(player.hp, 20, 5.));
         }
         let c = column(player.pos);
-        let radius = i32::from(self.mgr.cfg.view_distance);
+        let radius = i32::from(self.distances.simulation_distance);
         if player.center != Some(c) {
             player.center = Some(c);
             player.pending_cols.clear();
@@ -905,8 +963,12 @@ impl Room {
             let failed = &player.failed;
             player.loaded.retain(|&(x, z)| {
                 let keep = (x - c.0).abs() <= radius && (z - c.1).abs() <= radius;
-                if !keep && out.try_send(p::unload((x, z))).is_err() {
-                    failed.store(true, Release);
+                if !keep {
+                    if self.horizon.is_some() {
+                        player.far_loaded.insert((x,z));
+                    } else if out.try_send(p::unload((x, z))).is_err() {
+                        failed.store(true, Release);
+                    }
                 }
                 keep
             });
@@ -924,6 +986,26 @@ impl Room {
                 -yaw.sin() + player.pos[0] - player.previous[0],
                 yaw.cos() + player.pos[2] - player.previous[2],
             ];
+            if let Some(horizon) = &self.horizon {
+                player.far_pending.clear();
+                player.far_unload.clear();
+                let far = self.distances.horizon_view_distance;
+                player.far_unload.extend(
+                    player
+                        .far_loaded
+                        .iter()
+                        .copied()
+                        .filter(|&p| !horizon::in_range(p, c, far)),
+                );
+                for &(dx, dz) in horizon.route(dir) {
+                    let pos = (c.0 + i32::from(dx), c.1 + i32::from(dz));
+                    if !player.far_loaded.contains(&pos)
+                        && (self.generation.is_some() || self.world.template.contains(pos))
+                    {
+                        player.far_pending.push(pos);
+                    }
+                }
+            }
             player.pending_cols.sort_unstable_by_key(|&(x, z)| {
                 let dx = f64::from(x - c.0);
                 let dz = f64::from(z - c.1);
@@ -1005,6 +1087,7 @@ impl Room {
                     player.send(packet);
                 }
                 player.loaded.insert(col);
+                player.far_loaded.remove(&col);
                 if let Some(column) = self
                     .world
                     .template
@@ -1032,6 +1115,101 @@ impl Room {
                         }
                     }
                 }
+            }
+        }
+    }
+    fn advance_horizon(&mut self, i: usize) {
+        let Some(horizon) = &mut self.horizon else {
+            return;
+        };
+        let player = &mut self.players[i];
+        for _ in 0..16 {
+            if player.output.capacity() < 16 {
+                return;
+            }
+            let Some(pos) = player.far_unload.pop() else {
+                break;
+            };
+            if player.far_loaded.remove(&pos) {
+                player.send(p::unload(pos));
+            }
+        }
+        if !player.pending_cols.is_empty() || !player.far_unload.is_empty() {
+            return;
+        }
+        if let Some((pos, after)) = player.far_overlay.take()
+            && player.far_loaded.contains(&pos)
+            && let Some(edits) = self.world.edits.get(&pos)
+        {
+            use std::ops::Bound::{Excluded, Unbounded};
+            player.far_overlay = Some((pos, after));
+            for (n, (&block, &state)) in edits
+                .range((after.map_or(Unbounded, Excluded), Unbounded))
+                .enumerate()
+            {
+                if n >= 16 || player.output.capacity() < 16 {
+                    return;
+                }
+                player.send(p::block(block, state));
+                if let Some(lines) = self.signs.get(&block) {
+                    player.send(p::sign(block, lines));
+                }
+                player.far_overlay = Some((pos, Some(block)));
+            }
+            player.far_overlay = None;
+        }
+        let mut budget = 256 * 1024;
+        let end = player.far_pending.len();
+        if let Some((&first, rest)) = player.far_pending.split_last()
+            && !self.world.edits.contains_key(&first)
+            && horizon.get(first).is_some()
+            && let Some((index, &second)) = rest.iter().enumerate().rev().take(7).find(|&(_, p)| {
+                first.0.abs_diff(p.0) + first.1.abs_diff(p.1) == 1
+                    && !self.world.edits.contains_key(p)
+                    && horizon.get(*p).is_some()
+            })
+        {
+            if player.output.capacity() >= 16
+                && let Some(packet) = horizon.pair(first, second)
+                && packet.encoded(256).is_ok_and(|frame| frame.len() <= budget)
+            {
+                player.send(packet);
+                player.far_pending.pop();
+                player.far_pending.remove(index);
+                player.far_loaded.extend([first, second]);
+                return;
+            } else if horizon
+                .get(first)
+                .zip(horizon.get(second))
+                .is_some_and(|(a, b)| a.body().len() + b.body().len() + 128 <= budget)
+            {
+                return;
+            }
+        }
+        for index in (end.saturating_sub(8)..end).rev() {
+            if player.output.capacity() < 16 {
+                break;
+            }
+            let pos = player.far_pending[index];
+            if let Some(packet) = horizon.get(pos) {
+                let bytes = packet.body().len() + 128;
+                if bytes > budget {
+                    break;
+                }
+                budget -= bytes;
+                player.send(packet.clone());
+                player.far_pending.remove(index);
+                player.far_loaded.insert(pos);
+                if self.world.edits.contains_key(&pos) {
+                    player.far_overlay = Some((pos, None));
+                    break;
+                }
+            } else if self.world.template.contains(pos) {
+                horizon.request_template(pos);
+            } else if let Some(packet) = self.world.generated.columns.get(&pos).and_then(|col| col.packet.get()) {
+                horizon.insert(pos, packet.clone());
+            } else if let Some(generator) = &mut self.generation {
+                generator.request_distant(pos);
             }
         }
     }
@@ -1072,6 +1250,7 @@ impl Room {
                     a.send(p::respawn(self.dimension, a.mode));
                     a.send(p::health(20., 20, 5.));
                     a.loaded.clear();
+                    a.far_loaded.clear();
                     a.seen.clear();
                     a.seen_entities.clear();
                     a.teleport(a.spawn);

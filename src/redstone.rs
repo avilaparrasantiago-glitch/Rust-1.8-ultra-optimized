@@ -39,6 +39,7 @@ pub struct Circuit {
     queued: HashSet<BlockPos>,
     due: BTreeMap<u64, Vec<BlockPos>>,
     pending: HashMap<BlockPos, (u64, u16, u16)>,
+    sleeping: Vec<(u64, BlockPos)>,
 }
 impl Circuit {
     pub fn changed(&mut self, p: BlockPos) {
@@ -54,19 +55,43 @@ impl Circuit {
             self.queue.push_back(p);
         }
     }
-    pub fn step(&mut self, w: &mut World, tick: u64, out: &mut Vec<(BlockPos, u16)>) {
+    pub fn step_active(
+        &mut self,
+        w: &mut World,
+        tick: u64,
+        out: &mut Vec<(BlockPos, u16)>,
+        active: impl Fn(BlockPos) -> bool,
+    ) {
         out.clear();
+        self.sleeping.retain(|&(time, p)| {
+            if active(p) {
+                self.due.entry(time).or_default().push(p);
+                false
+            } else {
+                true
+            }
+        });
         let mut budget = LIMIT;
         while budget > 0 && self.due.first_key_value().is_some_and(|(&t, _)| t <= tick) {
-            let mut e = self.due.first_entry().unwrap();
+            let Some(mut e) = self.due.first_entry() else {
+                break;
+            };
             let time = *e.key();
-            let p = e.get_mut().pop().unwrap();
+            let Some(p) = e.get_mut().pop() else {
+                e.remove();
+                continue;
+            };
             if e.get().is_empty() {
                 e.remove();
             }
             if let Some(&(t, before, after)) = self.pending.get(&p)
                 && t == time
             {
+                if !active(p) {
+                    self.sleeping.push((time, p));
+                    budget -= 1;
+                    continue;
+                }
                 self.pending.remove(&p);
                 if w.block(p) == before {
                     self.write(w, p, after, out);
@@ -77,7 +102,13 @@ impl Circuit {
         // Deduplication and a bounded frontier keep feedback loops iterative.
         let visits = budget.min(self.queue.len());
         for _ in 0..visits {
-            let p = self.queue.pop_front().unwrap();
+            let Some(p) = self.queue.pop_front() else {
+                break;
+            };
+            if !active(p) {
+                self.queue.push_back(p);
+                continue;
+            }
             self.queued.remove(&p);
             let s = w.block(p);
             let id = s >> 4;

@@ -199,6 +199,29 @@ impl Overworld {
                         ((gx + 1) * 5 + gz + 1) * 33 + gy,
                     ];
                     let mut c = indices.map(|i| field[i]);
+                    let upper = indices.map(|i| field[i + 1]);
+                    // Interior cells and the air above the surface have a
+                    // uniform sign at all eight corners. Retain the original
+                    // sequence of floating point operations near zero.
+                    let mut lo = c[0];
+                    let mut hi = c[0];
+                    for v in c.into_iter().chain(upper) {
+                        lo = lo.min(v);
+                        hi = hi.max(v);
+                    }
+                    let margin = 512. * f64::EPSILON * lo.abs().max(hi.abs());
+                    if lo > margin || hi < -margin {
+                        let y0 = gy * 8;
+                        let end = if lo > margin { y0 + 8 } else { (y0 + 8).min(63) };
+                        let state = if lo > margin { 16 } else { 9 << 4 };
+                        for y in y0..end {
+                            for z in gz * 4..gz * 4 + 4 {
+                                let start = y * 256 + z * 16 + gx * 4;
+                                states[start..start + 4].fill(state);
+                            }
+                        }
+                        continue;
+                    }
                     let step = indices.map(|i| (field[i + 1] - field[i]) * 0.125);
                     for iy in 0..8 {
                         let y = gy * 8 + iy;

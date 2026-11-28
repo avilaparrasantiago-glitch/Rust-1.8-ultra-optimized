@@ -23,6 +23,7 @@ pub struct Config {
     pub metrics: SocketAddr,
     pub max_players: usize,
     pub view_distance: u8,
+    pub world_distances: BTreeMap<String, WorldDistances>,
     pub worlds: Vec<String>,
     pub dimensions: BTreeMap<String, crate::overworld::Dimension>,
     pub persistent_worlds: Vec<String>,
@@ -39,6 +40,13 @@ pub struct Config {
     pub nats_url_env: Option<String>,
     pub proxy_secret_env: Option<String>,
 }
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorldDistances {
+    pub simulation_distance: u8,
+    pub horizon_view_distance: u8,
+}
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -49,6 +57,7 @@ impl Default for Config {
             scripts: BTreeMap::new(),
             max_players: 128,
             view_distance: 3,
+            world_distances: BTreeMap::new(),
             worlds: vec!["lobby".into(), "arena".into()],
             terrain: Terrain::Normal,
             arena_file: None,
@@ -64,6 +73,16 @@ impl Default for Config {
     }
 }
 impl Config {
+    pub fn distances(&self, world: &str) -> WorldDistances {
+        self.world_distances
+            .get(world)
+            .copied()
+            .unwrap_or(WorldDistances {
+                simulation_distance: self.view_distance,
+                horizon_view_distance: self.view_distance,
+            })
+    }
+
     pub fn load(file: Option<&Path>) -> io::Result<Self> {
         let c: Self = match file {
             Some(p) => serde_json::from_slice(&std::fs::read(p)?).map_err(io::Error::other)?,
@@ -74,6 +93,10 @@ impl Config {
         }
         if c.dimensions.keys().any(|n| {
             !c.worlds.contains(n) || c.arena_file.is_some() || !matches!(c.terrain, Terrain::Normal)
+        }) || c.world_distances.iter().any(|(world, d)| {
+            !c.worlds.contains(world)
+                || !(8..=12).contains(&d.simulation_distance)
+                || !(d.simulation_distance..=64).contains(&d.horizon_view_distance)
         }) || c.persistent_worlds.iter().any(|n| !c.worlds.contains(n))
             || !(1..=8).contains(&c.view_distance)
             || !(1..=1_000_000).contains(&c.max_players)
